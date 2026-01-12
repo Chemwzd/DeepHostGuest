@@ -1,6 +1,3 @@
-"""
-dist 10的模型，测试差分进化dist=6的结果
-"""
 import os
 import sys
 import numpy as np
