@@ -60,6 +60,11 @@ DeepHostGuest is incompatible with AutoGluon due to environment constraints. You
 2. Run the notebook: `3.0.AutoGluon_and_SHAP.ipynb` for feature selection, 5-fold cross-validation model training and SHAP analysis (global & local SHAP analysis).
 
 
+# 5.Data Sources
+All datasets, including raw structural data, enhanced structural data, binding free energy data and structures, and crystalline sponge prediction inputs, are available at [Zenodo](https://zenodo.org/records/18222349).
+
+
+
 # Authors
 ## Maintainer
  - Zidi Wang (wangzd@shanghaitech.edu.cn)
