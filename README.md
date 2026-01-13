@@ -66,6 +66,5 @@ All datasets, including raw structural data, enhanced structural data, binding f
 
 
 # Authors
-## Maintainer
  - Zidi Wang (wangzd@shanghaitech.edu.cn)
 
