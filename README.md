@@ -70,7 +70,7 @@ All datasets, including raw structural data, enhanced structural data, binding f
 
 
 # 6.Optional: Benchmark with General Machine-Learning Potentials
-`DeepHostGuest/MLPotentialDocking.py` provides an ASE-calculator based docking path for comparing DeepHostGuest with general atomistic machine-learning potentials such as MACE-OFF or Meta FAIRChem UMA. The optimisation keeps the host molecule fixed, randomly initialises the guest, optimises the same `6 + n` guest variables (rotation, translation, and rotatable-bond torsions), and uses `scipy.optimize.differential_evolution` to minimise the ASE calculator energy.
+`DeepHostGuest/MLPotentialDocking.py` provides an ASE-calculator based docking path for comparing DeepHostGuest with general atomistic machine-learning potentials such as MACE-OFF or Meta FAIRChem UMA. The optimisation keeps the host molecule fixed, randomly initialises the guest, optimises the same `6 + n` guest variables (rotation, translation, and rotatable-bond torsions), and uses `scipy.optimize.differential_evolution` to minimise the ASE calculator energy. The translation bounds are centred on the host centroid and constrained by the host/guest size estimate so the guest centroid is sampled near the host centroid rather than far outside the host; pass `center_bound_radius` to override this radius explicitly.
 
 Install optional dependencies in a separate environment if needed:
 

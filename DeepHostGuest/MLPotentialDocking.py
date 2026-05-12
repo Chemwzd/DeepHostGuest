@@ -300,7 +300,22 @@ def combine_rdkit_mols_with_conformers(host_mol: Chem.Mol, guest_mol: Chem.Mol) 
     return complex_mol
 
 
-def _estimate_guest_length(guest_mol: Chem.Mol, seed: int = 1000, sel_conformers: int = 50) -> float:
+def _conformer_centroid(mol: Chem.Mol) -> np.ndarray:
+    """Return the arithmetic centroid of an RDKit conformer."""
+
+    return np.mean(np.asarray(mol.GetConformer().GetPositions(), dtype=np.float64), axis=0)
+
+
+def _center_conformer_at_origin(mol: Chem.Mol) -> None:
+    """Translate a molecule conformer so rotations keep its centroid fixed."""
+
+    conf = mol.GetConformer()
+    centroid = _conformer_centroid(mol)
+    for atom_idx, position in enumerate(np.asarray(conf.GetPositions(), dtype=np.float64)):
+        conf.SetAtomPosition(atom_idx, tuple(float(x) for x in position - centroid))
+
+
+def _estimate_guest_size(guest_mol: Chem.Mol, seed: int = 1000, sel_conformers: int = 50) -> Tuple[float, float]:
     copy_mol = copy.deepcopy(guest_mol)
     mol_lengths = []
     try:
@@ -320,13 +335,53 @@ def _estimate_guest_length(guest_mol: Chem.Mol, seed: int = 1000, sel_conformers
         coords_sets = [guest_mol.GetConformer().GetPositions()]
 
     lengths = []
+    centroid_radii = []
     for coords in coords_sets:
         coords = np.asarray(coords, dtype=np.float64)
         if len(coords) > 1:
             lengths.append(float(np.max(distance.cdist(coords, coords))))
+        centroid = np.mean(coords, axis=0)
+        centroid_radii.append(float(np.max(np.linalg.norm(coords - centroid, axis=1))))
     if not lengths:
         raise ValueError("Error estimating guest molecule size for docking bounds.")
-    return max(lengths)
+    return max(lengths), max(centroid_radii)
+
+
+def _estimate_guest_length(guest_mol: Chem.Mol, seed: int = 1000, sel_conformers: int = 50) -> float:
+    return _estimate_guest_size(guest_mol, seed=seed, sel_conformers=sel_conformers)[0]
+
+
+def _guest_center_bounds(
+    host_coords: np.ndarray,
+    guest_length: float,
+    guest_radius: float,
+    bounds_padding: float = 0.0,
+    center_bound_radius: Optional[float] = None,
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray, float]:
+    """Build translation bounds that keep the guest centroid near the host centroid.
+
+    The translation variables are interpreted as the guest-centroid target because
+    the optimiser recentres the starting guest conformer at the origin.  By
+    default the allowed centroid displacement is the smaller of the old adaptive
+    bound (guest diameter) and the host radial size after subtracting the guest
+    radius.  This avoids sampling poses whose guest centroid is far outside the
+    host while still allowing callers to override the radius explicitly.
+    """
+
+    host_coords = np.asarray(host_coords, dtype=np.float64)
+    host_centroid = np.mean(host_coords, axis=0)
+    host_radius = float(np.max(np.linalg.norm(host_coords - host_centroid, axis=1)))
+    padding = float(bounds_padding)
+
+    if center_bound_radius is None:
+        bound_radius = min(float(guest_length), max(host_radius - float(guest_radius), 0.0))
+    else:
+        bound_radius = float(center_bound_radius)
+
+    bound_radius = max(bound_radius + padding, 0.0)
+    max_coord = host_centroid + bound_radius
+    min_coord = host_centroid - bound_radius
+    return min_coord, max_coord, host_centroid, bound_radius
 
 
 class ASEPotentialConformationOptimizer:
@@ -362,6 +417,7 @@ class ASEPotentialConformationOptimizer:
             seed=seed,
             canonicalize=canonicalize_guest,
         )
+        _center_conformer_at_origin(self.mol)
         self.subtract_host_energy = subtract_host_energy
         self.subtract_guest_energy = subtract_guest_energy
         self.complex_charge = complex_charge
@@ -415,6 +471,9 @@ class ASEPotentialConformationOptimizer:
     def get_adaptive_bounds(self, sel_conformers: int = 50) -> float:
         return _estimate_guest_length(self.init_guest_mol, seed=self.seed, sel_conformers=sel_conformers)
 
+    def get_adaptive_guest_size(self, sel_conformers: int = 50) -> Tuple[float, float]:
+        return _estimate_guest_size(self.init_guest_mol, seed=self.seed, sel_conformers=sel_conformers)
+
 
 def dock_compound_with_ase_potential(
     guest_mol: Chem.Mol,
@@ -438,6 +497,7 @@ def dock_compound_with_ase_potential(
     popsize: int = 15,
     revise_popsize: bool = False,
     bounds_padding: float = 0.0,
+    center_bound_radius: Optional[float] = None,
     **kwargs,
 ):
     """Optimise a host-guest pose with an ASE-compatible ML potential.
@@ -449,6 +509,9 @@ def dock_compound_with_ase_potential(
     charge and spin multiplicity for calculators such as UMA/OMOL.  When
     subtracting isolated host or guest energies, use the corresponding
     ``host_*`` or ``guest_*`` arguments to describe those isolated systems.
+    ``bounds_padding`` expands or shrinks the guest-centroid translation box,
+    while ``center_bound_radius`` can be used to explicitly set the half-width
+    around the host centroid.
 
     Returns
     -------
@@ -478,10 +541,14 @@ def dock_compound_with_ase_potential(
     )
 
     host_coords = np.asarray(host_mol.GetConformer().GetPositions(), dtype=np.float64)
-    center_of_mass = np.mean(host_coords, axis=0)
-    guest_length = opt.get_adaptive_bounds(50) + float(bounds_padding)
-    max_coord = center_of_mass + guest_length
-    min_coord = center_of_mass - guest_length
+    guest_length, guest_radius = opt.get_adaptive_guest_size(50)
+    min_coord, max_coord, host_centroid, effective_center_bound_radius = _guest_center_bounds(
+        host_coords=host_coords,
+        guest_length=guest_length,
+        guest_radius=guest_radius,
+        bounds_padding=bounds_padding,
+        center_bound_radius=center_bound_radius,
+    )
 
     max_bound = np.concatenate([[np.pi] * 3, max_coord, [np.pi] * len(opt.rotable_bonds)], axis=0)
     min_bound = np.concatenate([[-np.pi] * 3, min_coord, [-np.pi] * len(opt.rotable_bonds)], axis=0)
@@ -489,6 +556,7 @@ def dock_compound_with_ase_potential(
 
     print(f"Number of Optimized Parameter: {len(max_bound)}")
     print(f"Number of Rotatable Bonds: {len(opt.rotable_bonds)}")
+    print(f"Guest centroid translation bounds: {min_coord} to {max_coord}")
 
     optimization_history = []
 
@@ -538,6 +606,12 @@ def dock_compound_with_ase_potential(
         "host_spin_multiplicity": host_spin_multiplicity,
         "guest_charge": guest_charge,
         "guest_spin_multiplicity": guest_spin_multiplicity,
+        "host_centroid": np.asarray(host_centroid, dtype=np.float64),
+        "guest_length": float(guest_length),
+        "guest_radius": float(guest_radius),
+        "center_bound_radius": float(effective_center_bound_radius),
+        "translation_min_bound": np.asarray(min_coord, dtype=np.float64),
+        "translation_max_bound": np.asarray(max_coord, dtype=np.float64),
     }
 
     return opt_complex_mol, opt_guest_mol, opt.mol, docking_result
