@@ -68,3 +68,36 @@ All datasets, including raw structural data, enhanced structural data, binding f
 # Authors
  - Zidi Wang (wangzd@shanghaitech.edu.cn)
 
+
+# 6.Optional: Benchmark with General Machine-Learning Potentials
+`DeepHostGuest/MLPotentialDocking.py` provides an ASE-calculator based docking path for comparing DeepHostGuest with general atomistic machine-learning potentials such as MACE-OFF. The optimisation keeps the host molecule fixed, randomly initialises the guest, optimises the same `6 + n` guest variables (rotation, translation, and rotatable-bond torsions), and uses `scipy.optimize.differential_evolution` to minimise the ASE calculator energy.
+
+Install optional dependencies in a separate environment if needed:
+
+```bash
+pip install ase mace-torch
+```
+
+Minimal MACE-OFF example:
+
+```python
+from rdkit import Chem
+from DeepHostGuest.MLPotentialDocking import dock_compound_with_mace_off
+
+host = Chem.MolFromMolFile("host.mol", removeHs=False)
+guest = Chem.MolFromMolFile("guest.mol", removeHs=False)
+
+complex_mol, guest_mol, init_guest_mol, result = dock_compound_with_mace_off(
+    guest_mol=guest,
+    host_mol=host,
+    model="medium",
+    device="cuda",              # use "cpu" when no CUDA device is available
+    maxiter=100,
+    output_complex_path="mace_off_complex.mol",
+    output_guest_path="mace_off_guest.mol",
+    savepath="mace_off_de_history.txt",
+)
+print(result["fun"], result["success"])
+```
+
+Because general ML potentials require atom types and atom coordinates, this workflow uses the host `.mol` conformer rather than the host `.ply` surface mesh as the scoring input. The output files contain the predicted low-energy complex and the corresponding guest conformation.
