@@ -314,6 +314,37 @@ def _center_conformer_at_origin(mol: Chem.Mol) -> None:
     for atom_idx, position in enumerate(np.asarray(conf.GetPositions(), dtype=np.float64)):
         conf.SetAtomPosition(atom_idx, tuple(float(x) for x in position - centroid))
 
+def get_molecular_length_from_mol(mol, heavy_atom_only=True):
+    """
+    读取 mol 文件并计算分子长度。
+    默认定义：所有重原子之间的最大 3D 距离，单位 Å。
+    """
+    if mol is None:
+        raise ValueError("mol 文件读取失败，请检查文件路径或 mol 文件格式。")
+
+    coords = mol.GetConformer().GetPositions()
+    # coords = conf.GetPositions()  # shape: (num_atoms, 3)
+
+    if heavy_atom_only:
+        atom_indices = [
+            atom.GetIdx()
+            for atom in mol.GetAtoms()
+            if atom.GetAtomicNum() > 1
+        ]
+    else:
+        atom_indices = list(range(mol.GetNumAtoms()))
+
+    selected_coords = coords[atom_indices]
+
+    max_dist = 0.0
+
+    for i in range(len(selected_coords)):
+        for j in range(i + 1, len(selected_coords)):
+            dist = np.linalg.norm(selected_coords[i] - selected_coords[j])
+            if dist > max_dist:
+                max_dist = dist
+    return max_dist
+
 
 def _estimate_guest_size(guest_mol: Chem.Mol, seed: int = 1000, sel_conformers: int = 50) -> Tuple[float, float]:
     copy_mol = copy.deepcopy(guest_mol)
@@ -343,7 +374,7 @@ def _estimate_guest_size(guest_mol: Chem.Mol, seed: int = 1000, sel_conformers: 
         centroid = np.mean(coords, axis=0)
         centroid_radii.append(float(np.max(np.linalg.norm(coords - centroid, axis=1))))
     if not lengths:
-        raise ValueError("Error estimating guest molecule size for docking bounds.")
+        return get_molecular_length_from_mol(guest_mol, heavy_atom_only=True), max(np.mean(guest_mol.GetConformer().GetPositions(), axis=0))
     return max(lengths), max(centroid_radii)
 
 
