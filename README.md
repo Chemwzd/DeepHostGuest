@@ -101,3 +101,7 @@ print(result["fun"], result["success"])
 ```
 
 Because general ML potentials require atom types and atom coordinates, this workflow uses the host `.mol` conformer rather than the host `.ply` surface mesh as the scoring input. The output files contain the predicted low-energy complex and the corresponding guest conformation.
+
+Troubleshooting:
+- If MACE raises `AttributeError: module 'torch.compiler' has no attribute 'is_compiling'`, update `mace-torch`/`torch` when possible. The MACE-OFF helper also installs a small compatibility shim automatically for older PyTorch 2.x environments.
+- Be careful not to swap `guest_mol` and `host_mol`: only `guest_mol` is randomly initialised and optimised, while `host_mol` is kept fixed.

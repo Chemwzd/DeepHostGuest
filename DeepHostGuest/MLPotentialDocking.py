@@ -11,6 +11,7 @@ provided by an ASE calculator, for example MACE-OFF.
 import copy
 import importlib.util
 import os
+from types import SimpleNamespace
 from typing import Iterable, Optional, Sequence, Tuple
 
 import numpy as np
@@ -91,6 +92,34 @@ def get_random_conformation(mol: Chem.Mol, rotable_bonds=None, seed=None, canoni
 MACE_OFF_SUPPORTED_ELEMENTS = {"H", "C", "N", "O", "P", "S", "F", "Cl", "Br", "I"}
 
 
+def _ensure_torch_compiler_is_compiling() -> None:
+    """Provide a compatibility shim required by some MACE builds.
+
+    Recent MACE versions call ``torch.compiler.is_compiling()``.  Some
+    supported PyTorch 2.x environments expose ``torch.compiler`` but do not yet
+    provide that helper, which otherwise raises an ``AttributeError`` during
+    every MACE energy evaluation.
+    """
+
+    if importlib.util.find_spec("torch") is None:
+        return
+
+    import torch
+
+    if not hasattr(torch, "compiler"):
+        torch.compiler = SimpleNamespace()
+
+    if hasattr(torch.compiler, "is_compiling"):
+        return
+
+    dynamo = getattr(torch, "_dynamo", None)
+    dynamo_is_compiling = getattr(dynamo, "is_compiling", None)
+    if callable(dynamo_is_compiling):
+        torch.compiler.is_compiling = dynamo_is_compiling
+    else:
+        torch.compiler.is_compiling = lambda: False
+
+
 def _require_module(module_name: str, package_hint: str) -> None:
     if importlib.util.find_spec(module_name) is None:
         raise ImportError(
@@ -112,6 +141,7 @@ def mace_off_calculator(model: str = "medium", device: str = "cpu", **kwargs):
         Extra keyword arguments forwarded to ``mace_off``.
     """
 
+    _ensure_torch_compiler_is_compiling()
     _require_module("mace", "pip install mace-torch")
     from mace.calculators import mace_off
 
@@ -258,6 +288,7 @@ class ASEPotentialConformationOptimizer:
         self._host_energy = self._calculate_energy(rdkit_mol_to_ase_atoms(host_mol)) if subtract_host_energy else 0.0
 
     def _calculate_energy(self, atoms) -> float:
+        _ensure_torch_compiler_is_compiling()
         atoms.calc = self.calculator
         return float(atoms.get_potential_energy())
 
