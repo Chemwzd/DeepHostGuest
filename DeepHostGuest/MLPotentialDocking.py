@@ -5,7 +5,7 @@ This module mirrors the optimisation strategy used by
 initial guest conformation is randomised, and differential evolution optimises
 6 + n variables (Euler rotations, xyz translation, and n rotatable-bond
 angles).  The objective is an atomistic machine-learning potential energy
-provided by an ASE calculator, for example MACE-OFF.
+provided by an ASE calculator, for example MACE-OFF or Meta FAIRChem UMA.
 """
 
 import copy
@@ -146,6 +146,54 @@ def mace_off_calculator(model: str = "medium", device: str = "cpu", **kwargs):
     from mace.calculators import mace_off
 
     return mace_off(model=model, device=device, **kwargs)
+
+
+def fairchem_uma_calculator(
+    model: str = "uma-s-1p1",
+    device: str = "cpu",
+    task_name: str = "omol",
+    inference_settings="default",
+    seed: int = 41,
+    predictor_kwargs: Optional[dict] = None,
+):
+    """Create a Meta FAIRChem UMA ASE calculator.
+
+    UMA is exposed through FAIRChem's ASE-compatible ``FAIRChemCalculator``.
+    The returned calculator maps the optimised guest variables directly to the
+    host-guest complex potential energy used by ``differential_evolution``.
+
+    Parameters
+    ----------
+    model
+        UMA checkpoint name accepted by ``fairchem.core.pretrained_mlip``, such
+        as ``"uma-s-1p1"``, or a local checkpoint path supported by FAIRChem.
+    device
+        Torch device string, e.g. ``"cpu"`` or ``"cuda"``.
+    task_name
+        UMA task/head name.  ``"omol"`` is the default for finite molecular
+        host-guest complexes; use another FAIRChem task such as ``"omc"`` when
+        it better matches the target system.
+    inference_settings
+        FAIRChem inference settings object or preset string (for example
+        ``"default"`` or ``"turbo"``).
+    seed
+        Random seed forwarded to ``FAIRChemCalculator``.
+    predictor_kwargs
+        Extra keyword arguments forwarded to
+        ``pretrained_mlip.get_predict_unit``.
+    """
+
+    _require_module("fairchem", "pip install fairchem-core")
+    from fairchem.core import FAIRChemCalculator, pretrained_mlip
+
+    kwargs = dict(predictor_kwargs or {})
+    predictor = pretrained_mlip.get_predict_unit(
+        model,
+        device=device,
+        inference_settings=inference_settings,
+        **kwargs,
+    )
+    return FAIRChemCalculator(predictor, task_name=task_name, seed=seed)
 
 
 def _ensure_conformer(mol: Chem.Mol, *, add_hs: bool = True, seed: int = 1000) -> Chem.Mol:
@@ -445,6 +493,50 @@ def dock_compound_with_mace_off(
     return dock_compound_with_ase_potential(
         guest_mol=guest_checked,
         host_mol=host_checked,
+        calculator=calculator,
+        **dock_kwargs,
+    )
+
+
+def dock_compound_with_fairchem_uma(
+    guest_mol: Chem.Mol,
+    host_mol: Chem.Mol,
+    *,
+    model: str = "uma-s-1p1",
+    device: str = "cpu",
+    task_name: str = "omol",
+    inference_settings="default",
+    seed: int = 41,
+    uma_kwargs: Optional[dict] = None,
+    **dock_kwargs,
+):
+    """Dock a host-guest complex with the Meta FAIRChem UMA potential.
+
+    This convenience wrapper keeps the host coordinates fixed, randomly
+    initialises the guest, and optimises the guest ``6 + n`` variables with the
+    same differential-evolution workflow as ``dock_compound_with_ase_potential``.
+    The optimisation objective is the UMA/FAIRChem ASE calculator energy of the
+    transformed host-guest complex.
+
+    Returns
+    -------
+    opt_complex_mol, opt_guest_mol, starting_guest_mol, docking_result
+        The predicted low-energy complex, the guest conformation in that
+        complex, the randomised starting guest, and optimisation metadata.
+    """
+
+    dock_kwargs.setdefault("seed", seed)
+    calculator = fairchem_uma_calculator(
+        model=model,
+        device=device,
+        task_name=task_name,
+        inference_settings=inference_settings,
+        seed=seed,
+        predictor_kwargs=uma_kwargs,
+    )
+    return dock_compound_with_ase_potential(
+        guest_mol=guest_mol,
+        host_mol=host_mol,
         calculator=calculator,
         **dock_kwargs,
     )
