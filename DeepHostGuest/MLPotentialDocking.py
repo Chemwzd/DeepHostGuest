@@ -5,7 +5,7 @@ This module mirrors the optimisation strategy used by
 initial guest conformation is randomised, and differential evolution optimises
 6 + n variables (Euler rotations, xyz translation, and n rotatable-bond
 angles).  The objective is an atomistic machine-learning potential energy
-provided by an ASE calculator, for example MACE-OFF.
+provided by an ASE calculator, for example MACE-OFF or Meta FAIRChem UMA.
 """
 
 import copy
@@ -148,6 +148,54 @@ def mace_off_calculator(model: str = "medium", device: str = "cpu", **kwargs):
     return mace_off(model=model, device=device, **kwargs)
 
 
+def fairchem_uma_calculator(
+    model: str = "uma-s-1p1",
+    device: str = "cpu",
+    task_name: str = "omol",
+    inference_settings="default",
+    seed: int = 41,
+    predictor_kwargs: Optional[dict] = None,
+):
+    """Create a Meta FAIRChem UMA ASE calculator.
+
+    UMA is exposed through FAIRChem's ASE-compatible ``FAIRChemCalculator``.
+    The returned calculator maps the optimised guest variables directly to the
+    host-guest complex potential energy used by ``differential_evolution``.
+
+    Parameters
+    ----------
+    model
+        UMA checkpoint name accepted by ``fairchem.core.pretrained_mlip``, such
+        as ``"uma-s-1p1"``, or a local checkpoint path supported by FAIRChem.
+    device
+        Torch device string, e.g. ``"cpu"`` or ``"cuda"``.
+    task_name
+        UMA task/head name.  ``"omol"`` is the default for finite molecular
+        host-guest complexes; use another FAIRChem task such as ``"omc"`` when
+        it better matches the target system.
+    inference_settings
+        FAIRChem inference settings object or preset string (for example
+        ``"default"`` or ``"turbo"``).
+    seed
+        Random seed forwarded to ``FAIRChemCalculator``.
+    predictor_kwargs
+        Extra keyword arguments forwarded to
+        ``pretrained_mlip.get_predict_unit``.
+    """
+
+    _require_module("fairchem", "pip install fairchem-core")
+    from fairchem.core import FAIRChemCalculator, pretrained_mlip
+
+    kwargs = dict(predictor_kwargs or {})
+    predictor = pretrained_mlip.get_predict_unit(
+        model,
+        device=device,
+        inference_settings=inference_settings,
+        **kwargs,
+    )
+    return FAIRChemCalculator(predictor, task_name=task_name, seed=seed)
+
+
 def _ensure_conformer(mol: Chem.Mol, *, add_hs: bool = True, seed: int = 1000) -> Chem.Mol:
     if not isinstance(mol, Chem.Mol):
         raise TypeError("Expected an RDKit Chem.Mol instance.")
@@ -175,6 +223,20 @@ def _symbols_and_positions(mol: Chem.Mol) -> Tuple[list, np.ndarray]:
     return symbols, positions
 
 
+def _set_ase_charge_and_spin(
+    atoms,
+    charge: Optional[int] = None,
+    spin_multiplicity: Optional[int] = None,
+):
+    """Attach total molecular charge and spin multiplicity metadata to ASE atoms."""
+
+    if charge is not None:
+        atoms.info["charge"] = int(charge)
+    if spin_multiplicity is not None:
+        atoms.info["spin"] = int(spin_multiplicity)
+    return atoms
+
+
 def validate_supported_elements(mols: Iterable[Chem.Mol], supported_elements: Sequence[str], potential_name: str) -> None:
     """Raise a helpful error when molecules contain elements unsupported by a potential."""
 
@@ -188,17 +250,27 @@ def validate_supported_elements(mols: Iterable[Chem.Mol], supported_elements: Se
         )
 
 
-def rdkit_mol_to_ase_atoms(mol: Chem.Mol):
+def rdkit_mol_to_ase_atoms(
+    mol: Chem.Mol,
+    charge: Optional[int] = None,
+    spin_multiplicity: Optional[int] = None,
+):
     """Convert one RDKit molecule with a conformer to an ASE ``Atoms`` object."""
 
     _require_module("ase", "pip install ase")
     from ase import Atoms
 
     symbols, positions = _symbols_and_positions(mol)
-    return Atoms(symbols=symbols, positions=positions)
+    atoms = Atoms(symbols=symbols, positions=positions)
+    return _set_ase_charge_and_spin(atoms, charge=charge, spin_multiplicity=spin_multiplicity)
 
 
-def rdkit_complex_to_ase_atoms(host_mol: Chem.Mol, guest_mol: Chem.Mol):
+def rdkit_complex_to_ase_atoms(
+    host_mol: Chem.Mol,
+    guest_mol: Chem.Mol,
+    charge: Optional[int] = None,
+    spin_multiplicity: Optional[int] = None,
+):
     """Convert a fixed host and transformed guest to one ASE ``Atoms`` object."""
 
     _require_module("ase", "pip install ase")
@@ -206,10 +278,11 @@ def rdkit_complex_to_ase_atoms(host_mol: Chem.Mol, guest_mol: Chem.Mol):
 
     host_symbols, host_positions = _symbols_and_positions(host_mol)
     guest_symbols, guest_positions = _symbols_and_positions(guest_mol)
-    return Atoms(
+    atoms = Atoms(
         symbols=host_symbols + guest_symbols,
         positions=np.vstack([host_positions, guest_positions]),
     )
+    return _set_ase_charge_and_spin(atoms, charge=charge, spin_multiplicity=spin_multiplicity)
 
 
 def combine_rdkit_mols_with_conformers(host_mol: Chem.Mol, guest_mol: Chem.Mol) -> Chem.Mol:
@@ -269,6 +342,12 @@ class ASEPotentialConformationOptimizer:
         canonicalize_guest: bool = True,
         subtract_host_energy: bool = False,
         subtract_guest_energy: bool = False,
+        complex_charge: Optional[int] = None,
+        complex_spin_multiplicity: Optional[int] = None,
+        host_charge: Optional[int] = None,
+        host_spin_multiplicity: Optional[int] = None,
+        guest_charge: Optional[int] = None,
+        guest_spin_multiplicity: Optional[int] = None,
     ):
         self.seed = seed
         if seed is not None:
@@ -285,7 +364,23 @@ class ASEPotentialConformationOptimizer:
         )
         self.subtract_host_energy = subtract_host_energy
         self.subtract_guest_energy = subtract_guest_energy
-        self._host_energy = self._calculate_energy(rdkit_mol_to_ase_atoms(host_mol)) if subtract_host_energy else 0.0
+        self.complex_charge = complex_charge
+        self.complex_spin_multiplicity = complex_spin_multiplicity
+        self.host_charge = host_charge
+        self.host_spin_multiplicity = host_spin_multiplicity
+        self.guest_charge = guest_charge
+        self.guest_spin_multiplicity = guest_spin_multiplicity
+        self._host_energy = (
+            self._calculate_energy(
+                rdkit_mol_to_ase_atoms(
+                    host_mol,
+                    charge=host_charge,
+                    spin_multiplicity=host_spin_multiplicity,
+                )
+            )
+            if subtract_host_energy
+            else 0.0
+        )
 
     def _calculate_energy(self, atoms) -> float:
         _ensure_torch_compiler_is_compiling()
@@ -297,13 +392,24 @@ class ASEPotentialConformationOptimizer:
             values = np.expand_dims(values, axis=0)
 
         guest = apply_changes(self.mol, values[0], self.rotable_bonds)
-        complex_atoms = rdkit_complex_to_ase_atoms(self.host_mol, guest)
+        complex_atoms = rdkit_complex_to_ase_atoms(
+            self.host_mol,
+            guest,
+            charge=self.complex_charge,
+            spin_multiplicity=self.complex_spin_multiplicity,
+        )
         energy = self._calculate_energy(complex_atoms)
 
         if self.subtract_host_energy:
             energy -= self._host_energy
         if self.subtract_guest_energy:
-            energy -= self._calculate_energy(rdkit_mol_to_ase_atoms(guest))
+            energy -= self._calculate_energy(
+                rdkit_mol_to_ase_atoms(
+                    guest,
+                    charge=self.guest_charge,
+                    spin_multiplicity=self.guest_spin_multiplicity,
+                )
+            )
         return energy
 
     def get_adaptive_bounds(self, sel_conformers: int = 50) -> float:
@@ -323,6 +429,12 @@ def dock_compound_with_ase_potential(
     add_hs: bool = True,
     subtract_host_energy: bool = False,
     subtract_guest_energy: bool = False,
+    complex_charge: Optional[int] = None,
+    complex_spin_multiplicity: Optional[int] = None,
+    host_charge: Optional[int] = None,
+    host_spin_multiplicity: Optional[int] = None,
+    guest_charge: Optional[int] = None,
+    guest_spin_multiplicity: Optional[int] = None,
     popsize: int = 15,
     revise_popsize: bool = False,
     bounds_padding: float = 0.0,
@@ -332,7 +444,11 @@ def dock_compound_with_ase_potential(
 
     Parameters mirror ``dock_compound`` where possible.  The host is read from
     ``host_mol`` rather than from a PLY mesh because ML interatomic potentials
-    require atom identities and atom coordinates.
+    require atom identities and atom coordinates.  ``complex_charge`` and
+    ``complex_spin_multiplicity`` are written to ``ase.Atoms.info`` as the total
+    charge and spin multiplicity for calculators such as UMA/OMOL.  When
+    subtracting isolated host or guest energies, use the corresponding
+    ``host_*`` or ``guest_*`` arguments to describe those isolated systems.
 
     Returns
     -------
@@ -353,6 +469,12 @@ def dock_compound_with_ase_potential(
         canonicalize_guest=canonicalize_guest,
         subtract_host_energy=subtract_host_energy,
         subtract_guest_energy=subtract_guest_energy,
+        complex_charge=complex_charge,
+        complex_spin_multiplicity=complex_spin_multiplicity,
+        host_charge=host_charge,
+        host_spin_multiplicity=host_spin_multiplicity,
+        guest_charge=guest_charge,
+        guest_spin_multiplicity=guest_spin_multiplicity,
     )
 
     host_coords = np.asarray(host_mol.GetConformer().GetPositions(), dtype=np.float64)
@@ -410,6 +532,12 @@ def dock_compound_with_ase_potential(
         "nfev": int(result["nfev"]),
         "x": np.asarray(result["x"], dtype=np.float64),
         "energy_unit": "eV (ASE calculator default)",
+        "complex_charge": complex_charge,
+        "complex_spin_multiplicity": complex_spin_multiplicity,
+        "host_charge": host_charge,
+        "host_spin_multiplicity": host_spin_multiplicity,
+        "guest_charge": guest_charge,
+        "guest_spin_multiplicity": guest_spin_multiplicity,
     }
 
     return opt_complex_mol, opt_guest_mol, opt.mol, docking_result
@@ -446,5 +574,64 @@ def dock_compound_with_mace_off(
         guest_mol=guest_checked,
         host_mol=host_checked,
         calculator=calculator,
+        **dock_kwargs,
+    )
+
+
+def dock_compound_with_fairchem_uma(
+    guest_mol: Chem.Mol,
+    host_mol: Chem.Mol,
+    *,
+    model: str = "uma-s-1p1",
+    device: str = "cpu",
+    task_name: str = "omol",
+    inference_settings="default",
+    seed: int = 41,
+    charge: int = 0,
+    spin_multiplicity: int = 1,
+    host_charge: Optional[int] = None,
+    host_spin_multiplicity: Optional[int] = None,
+    guest_charge: Optional[int] = None,
+    guest_spin_multiplicity: Optional[int] = None,
+    uma_kwargs: Optional[dict] = None,
+    **dock_kwargs,
+):
+    """Dock a host-guest complex with the Meta FAIRChem UMA potential.
+
+    This convenience wrapper keeps the host coordinates fixed, randomly
+    initialises the guest, and optimises the guest ``6 + n`` variables with the
+    same differential-evolution workflow as ``dock_compound_with_ase_potential``.
+    The optimisation objective is the UMA/FAIRChem ASE calculator energy of the
+    transformed host-guest complex.  ``charge`` and ``spin_multiplicity`` are
+    the total charge and spin multiplicity of the host-guest complex and are
+    stored on each ASE ``Atoms`` object as ``atoms.info["charge"]`` and
+    ``atoms.info["spin"]``.
+
+    Returns
+    -------
+    opt_complex_mol, opt_guest_mol, starting_guest_mol, docking_result
+        The predicted low-energy complex, the guest conformation in that
+        complex, the randomised starting guest, and optimisation metadata.
+    """
+
+    dock_kwargs.setdefault("seed", seed)
+    calculator = fairchem_uma_calculator(
+        model=model,
+        device=device,
+        task_name=task_name,
+        inference_settings=inference_settings,
+        seed=seed,
+        predictor_kwargs=uma_kwargs,
+    )
+    return dock_compound_with_ase_potential(
+        guest_mol=guest_mol,
+        host_mol=host_mol,
+        calculator=calculator,
+        complex_charge=charge,
+        complex_spin_multiplicity=spin_multiplicity,
+        host_charge=host_charge,
+        host_spin_multiplicity=host_spin_multiplicity,
+        guest_charge=guest_charge,
+        guest_spin_multiplicity=guest_spin_multiplicity,
         **dock_kwargs,
     )

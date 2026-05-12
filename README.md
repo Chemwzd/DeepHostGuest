@@ -70,12 +70,12 @@ All datasets, including raw structural data, enhanced structural data, binding f
 
 
 # 6.Optional: Benchmark with General Machine-Learning Potentials
-`DeepHostGuest/MLPotentialDocking.py` provides an ASE-calculator based docking path for comparing DeepHostGuest with general atomistic machine-learning potentials such as MACE-OFF. The optimisation keeps the host molecule fixed, randomly initialises the guest, optimises the same `6 + n` guest variables (rotation, translation, and rotatable-bond torsions), and uses `scipy.optimize.differential_evolution` to minimise the ASE calculator energy.
+`DeepHostGuest/MLPotentialDocking.py` provides an ASE-calculator based docking path for comparing DeepHostGuest with general atomistic machine-learning potentials such as MACE-OFF or Meta FAIRChem UMA. The optimisation keeps the host molecule fixed, randomly initialises the guest, optimises the same `6 + n` guest variables (rotation, translation, and rotatable-bond torsions), and uses `scipy.optimize.differential_evolution` to minimise the ASE calculator energy.
 
 Install optional dependencies in a separate environment if needed:
 
 ```bash
-pip install ase mace-torch
+pip install ase mace-torch fairchem-core
 ```
 
 Minimal MACE-OFF example:
@@ -100,8 +100,35 @@ complex_mol, guest_mol, init_guest_mol, result = dock_compound_with_mace_off(
 print(result["fun"], result["success"])
 ```
 
-Because general ML potentials require atom types and atom coordinates, this workflow uses the host `.mol` conformer rather than the host `.ply` surface mesh as the scoring input. The output files contain the predicted low-energy complex and the corresponding guest conformation.
+Minimal Meta FAIRChem UMA example:
+
+```python
+from rdkit import Chem
+from DeepHostGuest.MLPotentialDocking import dock_compound_with_fairchem_uma
+
+host = Chem.MolFromMolFile("host.mol", removeHs=False)
+guest = Chem.MolFromMolFile("guest.mol", removeHs=False)
+
+complex_mol, guest_mol, init_guest_mol, result = dock_compound_with_fairchem_uma(
+    guest_mol=guest,
+    host_mol=host,
+    model="uma-s-1p1",
+    task_name="omol",           # finite molecular host-guest complexes
+    device="cuda",              # use "cpu" when no CUDA device is available
+    charge=0,                    # total charge of the host-guest complex
+    spin_multiplicity=1,         # total spin multiplicity; 1 = singlet
+    maxiter=100,
+    output_complex_path="uma_complex.mol",
+    output_guest_path="uma_guest.mol",
+    savepath="uma_de_history.txt",
+)
+print(result["fun"], result["success"])
+```
+
+Because general ML potentials require atom types and atom coordinates, this workflow uses the host `.mol` conformer rather than the host `.ply` surface mesh as the scoring input. For UMA, `task_name="omol"` is a good default for finite molecular complexes; choose another FAIRChem task such as `"omc"` only when it better represents your host-guest system. The `charge` and `spin_multiplicity` arguments are written to `ase.Atoms.info` as the total charge and spin multiplicity of the host-guest complex. If you also enable isolated-energy subtraction (`subtract_host_energy=True` or `subtract_guest_energy=True`), pass `host_charge`/`host_spin_multiplicity` and `guest_charge`/`guest_spin_multiplicity` for those isolated systems. The output files contain the predicted low-energy complex and the corresponding guest conformation.
 
 Troubleshooting:
 - If MACE raises `AttributeError: module 'torch.compiler' has no attribute 'is_compiling'`, update `mace-torch`/`torch` when possible. The MACE-OFF helper also installs a small compatibility shim automatically for older PyTorch 2.x environments.
+- FAIRChem UMA models can require Hugging Face/model access and may download checkpoints on first use. If model loading fails, verify your `fairchem-core` installation, credentials, model name, and `device` setting.
+- For UMA/OMOL calculations, explicitly set the total system `charge` and `spin_multiplicity` (for example, `1` for a singlet and `2` for a doublet) so the correct molecular state is scored.
 - Be careful not to swap `guest_mol` and `host_mol`: only `guest_mol` is randomly initialised and optimised, while `host_mol` is kept fixed.
