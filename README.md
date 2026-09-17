@@ -23,7 +23,7 @@ For Preprocessing, `xTB` and `Multiwfn` are needed.
 # 1.Installation
 
 ```bash
-git clone https://github.com/Chemwzd/DeepHostGuest.git
+git clone https://github.com/KumquatYZ/DeepHostGuest.git
 cd DeepHostGuest
 conda create -n DeepHostGuest python=3.9
 conda activate DeepHostGuest
