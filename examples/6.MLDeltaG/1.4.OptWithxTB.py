@@ -53,17 +53,17 @@ for name in names:
         copied_concat_file = os.path.join(name_calculation_dir, f'{name}_concat_pre.mol')
         os.system(f'{obabel} {copied_concat_file} -O {copied_concat_file}')
         if charge_value != 0:
-            os.system(f'{xtb} {copied_concat_file} -c {charge_value} --alpb water -v')
+            os.system(f'{xtb} {copied_concat_file} -c {charge_value} --opt --alpb water -v')
         else:
-            os.system(f'{xtb} {copied_concat_file} -c {charge_value} -v')
+            os.system(f'{xtb} {copied_concat_file} -c {charge_value} --opt -v')
         if os.path.exists(opt_mol_file):
             shutil.copy(opt_mol_file, os.path.join(opt_struc_dir, f'{name}_gfn2.mol'))
         else:
-            # If Optimization Falied, Using GFN-FF Instead.
+            # If GFN2-xTB optimization failed, fall back to GFN-FF optimization.
             if charge_value != 0:
-                os.system(f'{xtb} {copied_concat_file} -c {charge_value} -P 32 --gfnff --alpb water -v')
+                os.system(f'{xtb} {copied_concat_file} -c {charge_value} -P 32 --gfnff --opt --alpb water -v')
             else:
-                os.system(f'{xtb} {copied_concat_file} -c {charge_value} -P 32 --gfnff -v')
+                os.system(f'{xtb} {copied_concat_file} -c {charge_value} -P 32 --gfnff --opt -v')
             shutil.copy(opt_mol_file, os.path.join(opt_struc_dir, f'{name}_gfn2.mol'))
     except Exception as ex:
         print(ex)
