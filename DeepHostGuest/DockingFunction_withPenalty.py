@@ -1,3 +1,25 @@
+"""Inference-time docking with an explicit steric penalty.
+
+Two different objectives appear in this project - do not mix them up:
+
+* Training objective (see ``models.py::mdn_loss_fn``):
+  the negative log-likelihood of the learned mixture density,
+  ``-log sum_k pi_k N(d_ij | mu_k, sigma_k)``, evaluated on host-guest node
+  pairs with ``d_ij <= 10 A`` (``DeepDock.dist_threhold``).
+* Docking / search objective (this module):
+  the negative SUM OF PROBABILITY DENSITIES, ``-sum_pairs P(d_ij)``
+  (this convention is inherited from the released DeepDock implementation),
+  where pairs with ``d_ij > dist_threshold`` are masked out and a pseudo
+  Lennard-Jones steric penalty is added.
+
+Distance cutoffs used in the manuscript:
+* training mask:        10 A   (``model.dist_threhold``)
+* docking cutoff:        6 A   (``dist_threshold``, default below)
+* penalty cutoffs:        3 A host-guest, 1.5 A guest-internal (intramolecular)
+
+The docking objective is NOT a binding-affinity score; it is an optimisation
+target used only to locate a plausible guest pose.
+"""
 import os
 import copy
 import numpy as np
@@ -104,7 +126,7 @@ class _PenaltyCalculator:
         return abs(host_guest_terms), abs(gg_terms)
 
 
-def score_compound(guest_mol, host_ply, model, removeHs=False, dist_threshold=5.,
+def score_compound(guest_mol, host_ply, model, removeHs=False, dist_threshold=6.,
                    seed=1000, device='cpu', host_mol=None,
                    penalty=False, host_guest_rm=3., guest_guest_rm=1.5):
     if penalty and not host_mol:
@@ -146,6 +168,8 @@ def score_compound(guest_mol, host_ply, model, removeHs=False, dist_threshold=5.
     prob = calculate_probablity_fast(pi, sigma, mu, dist)
     if dist_threshold:
         prob[torch.where(dist_t > dist_threshold)[0]] = 0.0
+    # Docking objective: negative SUM of probability densities (-sum p), not the
+    # negative log-likelihood used during training. Lower is better.
     score = -np.sum(prob, axis=0)
 
     if penalty:
@@ -161,7 +185,7 @@ def count_num_opt_parameters(guest_mol):
     return 6 + len(get_torsions([guest_mol]))
 
 
-def dock_compound(guest_mol, host_ply, model, removeHs=True, dist_threshold=5.,
+def dock_compound(guest_mol, host_ply, model, removeHs=True, dist_threshold=6.,
                   seed=1000, device='cpu', savepath=None, host_mol=None, canonicalize_guest=True,
                   host_guest_rm=3., guest_guest_rm=1.5, **kwargs):
     """
@@ -283,7 +307,7 @@ def dock_compound(guest_mol, host_ply, model, removeHs=True, dist_threshold=5.,
 
 class OptimizeConformation:
     def __init__(self, guest_mol, host_coords, n_particles, pi, mu, sigma, removeHs=True, save_molecules=False,
-                 dist_threshold=5, seed=1000, host_mol=None, canonicalize_guest=True, penalty_calc: _PenaltyCalculator = None):
+                 dist_threshold=6., seed=1000, host_mol=None, canonicalize_guest=True, penalty_calc: _PenaltyCalculator = None):
         super(OptimizeConformation, self).__init__()
         if seed:
             np.random.seed(seed)

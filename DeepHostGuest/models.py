@@ -214,6 +214,9 @@ class DeepDock(nn.Module):
         C_batch = C_batch.repeat(1, N_l, N_t)[C_mask].to(self.device)
 
         # Outputs
+        # pi is softmax-normalised (sum_k pi_k = 1), so sum_k pi_k * N(d | mu_k, sigma_k)
+        # is a proper Gaussian-mixture density P(d) for each host-guest node pair.
+        # sigma and mu are strictly positive by construction (sigma >= 1.1 A, mu >= 1 A).
         pi = F.softmax(self.z_pi(C), -1)
         sigma = F.elu(self.z_sigma(C)) + 1.1
         mu = F.elu(self.z_mu(C)) + 1
@@ -237,6 +240,15 @@ class DeepDock(nn.Module):
 
 
 def mdn_loss_fn(pi, sigma, mu, y):
+    """Training objective: negative log-likelihood (NLL) of the mixture density.
+
+    loss = -log sum_k pi_k N(y | mu_k, sigma_k)   (per host-guest node pair)
+
+    In training (see examples/3.ModelTraining) this loss is averaged over pairs
+    with d <= model.dist_threhold (10 A in the manuscript).  Note that the
+    inference-time docking objective in ``DockingFunction_withPenalty.py`` is a
+    different quantity (negative SUM of densities, -sum p).
+    """
     normal = Normal(mu, sigma)
     loglik = normal.log_prob(y.expand_as(normal.loc))
     loss = -torch.logsumexp(torch.log(pi) + loglik, dim=1)
