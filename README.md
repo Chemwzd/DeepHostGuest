@@ -94,6 +94,18 @@ pip install torch-scatter==2.1.2 torch-sparse==0.6.18 torch-spline-conv==1.2.2 \
 | Gaussian 09 | DFT binding free energies (step 7) | protocol in SI §5.2 |
 | Schrödinger / AutoDock / ORCA / stk / cgbind | benchmark comparators (Fig. 2) | protocols in SI §3.3; run externally |
 
+**Optional Python dependency — `sugar`.** The CSD-curation helpers
+(`examples/1.CollectCCDC/`) and the optional `optimise_z` fallback in
+`examples/6.MLDeltaG/MLPredictDeltaG.py` can use an internal `sugar` toolkit
+(`HostMolecule`, a vendored copy of pywindow). It is **not** distributed with
+this repository, and **nothing in steps 2–8 requires it**: the augmentation,
+docking, xTB post-optimization and accuracy evaluation all run with the
+dependencies above. The two functions that would need it now raise an
+explicit `ImportError` explaining this, instead of failing at import time. Where
+possible the toolkit has been replaced by plain RDKit
+(`DeepHostGuest/utils/geometry.py`, `heavy_atom_centroid`) or by the public
+[`pywindow`](https://github.com/MarcinMiklitz/pywindow) package.
+
 ---
 
 ## 3. Quick start (bundled example)
@@ -319,6 +331,7 @@ Stated explicitly here to avoid any ambiguity between the code and the paper:
 | Symptom | Fix |
 |---|---|
 | `ModuleNotFoundError: torch_scatter` / PyG import errors | install the PyG wheel set matching your exact torch/CUDA combo (see §2) |
+| `ModuleNotFoundError: No module named 'sugar'` | only steps 1 / 6-feature-extraction may need it — see the optional-dependency note in §2; all other steps run without it |
 | `xtb: command not found` | install xTB and add it to `PATH`, or pass `--xtb /path/to/xtb` |
 | `obabel: command not found` | `conda install -c conda-forge openbabel`; the post-opt script can also run without it |
 | `xTB did not produce xtbopt.mol` | ensure `--opt` is passed; for difficult systems retry with `--gfnff-fallback` |
@@ -326,6 +339,7 @@ Stated explicitly here to avoid any ambiguity between the code and the paper:
 | `Error Conformers Generation` | check that the guest `.mol` has valid bonds/valences (RDKit sanitisation) |
 | Slow prediction for flexible guests | expected: runtime grows with rotatable-bond count (see Fig. S11); reduce `maxiter` for quick tests |
 | No Materials Studio for RMSD alignment | any host-atom-only superposition works (RDKit `AlignMol` / PyMOL restricted to host atoms), followed by `pydockrmsd` |
+| `Processed dataset not found` when loading `HostGuest_dataset` | run `HostGuest_dataset(root).process()` once to build `processed/data.pt` from your `host_ply/` + `guest_mol/` folders |
 
 ---
 
@@ -352,6 +366,15 @@ whose tools this pipeline builds upon.
 
 See [`CHANGELOG.md`](CHANGELOG.md).
 
+- **v1.0.2** (2026-10-08): code-review hardening. Removed the internal `sugar`
+  dependency from the shipped pipeline (`utils/geometry.py`, RDKit
+  `heavy_atom_centroid`, guarded imports); fixed the dataset builder
+  (`HostGuest_dataset.process` used an unset attribute, `rstrip('.ply')` truncated
+  file names, `torch.load` now requests `weights_only=False` for PyTorch ≥ 2.6);
+  fixed a GPU-only crash in `score_compound` (CUDA index tensor used to mask a
+  NumPy array); restored the missing `calculate_penalty_all` helper; made
+  Multiwfn/xTB helpers restore the working directory and fixed the
+  `'sp.out' and 'g98.out' in ...` cache check.
 - **v1.0.1** (2026-10-08): fixed the missing `--opt` in the MLΔG xTB script;
   unified the `dist_threshold` default to 6 Å; documented the training/docking
   objectives and all cutoffs; added the xTB post-optimization CLI, LICENSE,

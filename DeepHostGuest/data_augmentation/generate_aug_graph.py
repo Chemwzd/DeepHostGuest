@@ -1,7 +1,7 @@
 """
 Perform data augmentation by random translation and rotation of molecular structure.
 """
-from sugar.utilities import cal_rotation_matrix, rotation_around_axis, translation, norm_vector
+from DeepHostGuest.utils.geometry import cal_rotation_matrix, rotation_around_axis, translation, norm_vector
 import random
 import os
 import numpy as np
@@ -49,7 +49,7 @@ def get_aug_coordinates_single(mol_contents, num_aug=10, rotation_step_size=2, t
         rand_vector = norm_vector(np.random.rand(3) * 2 - 1)
         # Get the translation vector.
         translation_vector = rand_vector * translation_step_size
-        # Convert shape (3.use_deepdock, ) into shape (1.preprocessing, 3.use_deepdock)
+        # Convert shape (3, ) into shape (1, 3)
         translation_vector = translation_vector[np.newaxis, :]
 
         new_positions = rotation_around_axis(init_coordinates.T, rot_mat).T

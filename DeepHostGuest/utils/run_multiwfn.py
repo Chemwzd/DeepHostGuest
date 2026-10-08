@@ -7,10 +7,10 @@ class Multiwfn:
     """
     Generate molden.input and convert it into mesh file.
 
-    Example: (Can be seen in /examples/2.train_deepdock.preprocessing)
+    Example: (see /examples/2.DataAugmentation)
     -------------------------------------------------
-    1.preprocessing.generate_structural_data. Execute xtb to generate molden.input
-        from DeepDockHostGuest.1.preprocessing.preprocessing.generate_mesh import *
+    1. Execute xtb to generate molden.input
+        from DeepHostGuest.data_augmentation.generate_mesh import *
         from tqdm import tqdm
 
         xtb = ESP('/path/to/xtb', '/path/to/Multiwfn)
@@ -22,7 +22,7 @@ class Multiwfn:
         for name in tqdm(names):
             print(f"======Processing {name}======")
             host_files = [i for i in os.listdir(os.path.join(host_path, name)) if i.endswith('.xyz')]
-            files_prefix = [i.rstrip('_host.xyz') for i in host_files]
+            files_prefix = [os.path.splitext(i)[0] for i in host_files]
             for prefix in tqdm(files_prefix):
                 try:
                     host_xtb, _ = xtb.run_xtb(
@@ -51,100 +51,122 @@ class Multiwfn:
         :param input_file: the path of input file
         :param workdir: the working directory of Multiwfn runs.
                         it should be the folder of molden_path.
+        :param formchk_path: optional path to Gaussian's ``formchk``; when given
+                        it is used instead of Multiwfn.
         """
         current_directory = os.getcwd()
-        if not os.path.exists(workdir):
-            os.makedirs(workdir)
-        os.chdir(workdir)
-        if formchk_path:
-            out, errors = run_command(f"{formchk_path} {input_file}")
-        else:
-            convert_to_fch_txt = ['\n', '100\n', '2\n', '7\n', '\n']
-            with open(os.path.join(workdir, 'convert2fch.txt'), 'w') as f:
-                f.writelines(convert_to_fch_txt)
-            if 'settings.ini' not in os.listdir(workdir):
-                shutil.copy(self.multiwfn_settings, workdir)
-            out, errors = run_command(f"{self.multiwfn} {input_file} < convert2fch.txt |tee "
-                                      f"convert2fch.log")
-            os.remove('convert2fch.txt')
-            os.remove('settings.ini')
+        workdir = os.path.abspath(workdir)
+        os.makedirs(workdir, exist_ok=True)
+        try:
+            os.chdir(workdir)
+            if formchk_path:
+                out, errors = run_command(f"{formchk_path} {input_file}")
+            else:
+                convert_to_fch_txt = ['\n', '100\n', '2\n', '7\n', '\n']
+                with open(os.path.join(workdir, 'convert2fch.txt'), 'w') as f:
+                    f.writelines(convert_to_fch_txt)
+                if 'settings.ini' not in os.listdir(workdir):
+                    shutil.copy(self.multiwfn_settings, workdir)
+                out, errors = run_command(f"{self.multiwfn} {input_file} < convert2fch.txt |tee "
+                                          f"convert2fch.log")
+                for scratch in ('convert2fch.txt', 'settings.ini'):
+                    if os.path.exists(scratch):
+                        os.remove(scratch)
+        finally:
             os.chdir(current_directory)
         return out, errors
 
     def run_fch_to_esp(self, fchpath, workdir, grid_points_spacing=0.25, rename=False):
         """
         The .fch file name shoule be the default value "molden.fch".
+
+        Returns ``(0, 0)`` when the requested output already exists (the
+        ``.pdb`` file is named ``esp.pdb`` when ``rename=True``, else
+        ``vtx.pdb``).
         """
         current_directory = os.getcwd()
-        os.chdir(workdir)
-        if not os.path.exists(workdir):
-            os.makedirs(workdir)
-        if not rename and 'vtx.pdb' in os.listdir(workdir) or rename and 'esp.pdb' in os.listdir(workdir):
-            print(f"{fchpath} has been calculated to vtx.pdb!!")
-            return 0, 0
-        fch_to_esp_txt = ['12\n', '3\n', f'{grid_points_spacing}\n', '0\n', '-2\n', '\n', '66\n', '\n']
-        with open(os.path.join(workdir, 'fch2esp.txt'), 'w') as f:
-            f.writelines(fch_to_esp_txt)
+        workdir = os.path.abspath(workdir)
+        os.makedirs(workdir, exist_ok=True)
+        try:
+            os.chdir(workdir)
+            existing = 'esp.pdb' if rename else 'vtx.pdb'
+            if existing in os.listdir(workdir):
+                print(f"{fchpath} has been calculated to {existing}!!")
+                return 0, 0
+            fch_to_esp_txt = ['12\n', '3\n', f'{grid_points_spacing}\n', '0\n', '-2\n', '\n', '66\n', '\n']
+            with open(os.path.join(workdir, 'fch2esp.txt'), 'w') as f:
+                f.writelines(fch_to_esp_txt)
 
-        os.chdir(workdir)
-        if 'settings.ini' not in os.listdir(workdir):
-            shutil.copy(self.multiwfn_settings, workdir)
-        out, errors = run_command(f"{self.multiwfn} {fchpath} < fch2esp.txt |tee fch2esp.log")
-        os.remove('fch2esp.txt')
-        os.remove('settings.ini')
-        if rename:
-            shutil.move('vtx.pdb', 'esp.pdb')
-        os.chdir(current_directory)
+            if 'settings.ini' not in os.listdir(workdir):
+                shutil.copy(self.multiwfn_settings, workdir)
+            out, errors = run_command(f"{self.multiwfn} {fchpath} < fch2esp.txt |tee fch2esp.log")
+            for scratch in ('fch2esp.txt', 'settings.ini'):
+                if os.path.exists(scratch):
+                    os.remove(scratch)
+            if rename and os.path.exists('vtx.pdb'):
+                shutil.move('vtx.pdb', 'esp.pdb')
+        finally:
+            os.chdir(current_directory)
         return out, errors
 
     def run_fch_to_ed(self, fchpath, workdir, isovalue=0.001, rename=False):
         """
         The .fch file name shoule be the default value "molden.fch".
+
+        Returns ``(0, 0)`` when the requested output already exists (the
+        ``.pdb`` file is named ``ed.pdb`` when ``rename=True``, else
+        ``vtx.pdb``).
         """
         current_directory = os.getcwd()
-        os.chdir(workdir)
-        if not os.path.exists(workdir):
-            os.makedirs(workdir)
-        if not rename and 'vtx.pdb' in os.listdir(workdir) or rename and 'ed.pdb' in os.listdir(workdir):
-            print(f"{fchpath} has been calculated to vtx.pdb!!")
-            return 0, 0
-        fch_to_ed_txt = ['12\n', '1\n', '1\n', f'{isovalue}\n', '6\n', '66\n', '\n']
-        with open(os.path.join(workdir, 'fch2ed.txt'), 'w') as f:
-            f.writelines(fch_to_ed_txt)
-        if 'molden.fch' not in os.listdir(workdir):
-            shutil.copy(fchpath, workdir)
-        os.chdir(workdir)
-        if 'settings.ini' not in os.listdir(workdir):
-            shutil.copy(self.multiwfn_settings, workdir)
-        out, errors = run_command(f"{self.multiwfn} {fchpath} < fch2ed.txt |tee fch2ed.log")
-        os.remove('fch2ed.txt')
-        os.remove('settings.ini')
-        if rename:
-            shutil.move('vtx.pdb', 'ed.pdb')
-        os.chdir(current_directory)
+        workdir = os.path.abspath(workdir)
+        os.makedirs(workdir, exist_ok=True)
+        try:
+            os.chdir(workdir)
+            existing = 'ed.pdb' if rename else 'vtx.pdb'
+            if existing in os.listdir(workdir):
+                print(f"{fchpath} has been calculated to {existing}!!")
+                return 0, 0
+            fch_to_ed_txt = ['12\n', '1\n', '1\n', f'{isovalue}\n', '6\n', '66\n', '\n']
+            with open(os.path.join(workdir, 'fch2ed.txt'), 'w') as f:
+                f.writelines(fch_to_ed_txt)
+            if 'molden.fch' not in os.listdir(workdir):
+                shutil.copy(fchpath, workdir)
+            if 'settings.ini' not in os.listdir(workdir):
+                shutil.copy(self.multiwfn_settings, workdir)
+            out, errors = run_command(f"{self.multiwfn} {fchpath} < fch2ed.txt |tee fch2ed.log")
+            for scratch in ('fch2ed.txt', 'settings.ini'):
+                if os.path.exists(scratch):
+                    os.remove(scratch)
+            if rename and os.path.exists('vtx.pdb'):
+                shutil.move('vtx.pdb', 'ed.pdb')
+        finally:
+            os.chdir(current_directory)
         return out, errors
 
     def run_fch_to_pdb(self, fch_path, workdir):
         """
-
+        Convert a .fch file into a .pdb file with Multiwfn.
         """
         current_directory = os.getcwd()
-        if not os.path.exists(workdir):
-            os.makedirs(workdir)
-        os.chdir(workdir)
+        workdir = os.path.abspath(workdir)
+        os.makedirs(workdir, exist_ok=True)
+        try:
+            os.chdir(workdir)
 
-        fch_to_pdb_txt = ['100\n', '2\n', '1\n', '\n']
-        with open(os.path.join(workdir, 'fch2pdb.txt'), 'w') as f:
-            f.writelines(fch_to_pdb_txt)
-        if 'molden.fch' not in os.listdir(workdir):
-            shutil.copy(fch_path, workdir)
-        if 'settings.ini' not in os.listdir(workdir):
-            shutil.copy(self.multiwfn_settings, workdir)
-        out, errors = run_command(f"{self.multiwfn} {fch_path} < fch2pdb.txt |tee "
-                                  f"fch2pdb.log")
-        os.remove('fch2pdb.txt')
-        os.remove('settings.ini')
-        os.chdir(current_directory)
+            fch_to_pdb_txt = ['100\n', '2\n', '1\n', '\n']
+            with open(os.path.join(workdir, 'fch2pdb.txt'), 'w') as f:
+                f.writelines(fch_to_pdb_txt)
+            if 'molden.fch' not in os.listdir(workdir):
+                shutil.copy(fch_path, workdir)
+            if 'settings.ini' not in os.listdir(workdir):
+                shutil.copy(self.multiwfn_settings, workdir)
+            out, errors = run_command(f"{self.multiwfn} {fch_path} < fch2pdb.txt |tee "
+                                      f"fch2pdb.log")
+            for scratch in ('fch2pdb.txt', 'settings.ini'):
+                if os.path.exists(scratch):
+                    os.remove(scratch)
+        finally:
+            os.chdir(current_directory)
         return out, errors
 
     @staticmethod

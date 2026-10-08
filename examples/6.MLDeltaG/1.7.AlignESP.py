@@ -9,7 +9,7 @@ Alternatively, you can execute the operation directly in the IDE.
 """
 
 from MLPredictDeltaG import AlignPointCloud, ply_to_xyz_prop_txt
-from sugar.molecule import HostMolecule
+from DeepHostGuest.utils.utilities import heavy_atom_centroid
 import os
 import warnings
 
@@ -28,8 +28,9 @@ if __name__ == '__main__':
     for name in tqdm(names):
         print(f'Processing {name}')
 
-        host_mol = HostMolecule.init_from_mol_file(os.path.join(calculation_dir, f'{name}_host', f'{name}_host.mol'))
-        host_centroid = host_mol.get_centroid_remove_h()
+        host_centroid = heavy_atom_centroid(
+            os.path.join(calculation_dir, f'{name}_host', f'{name}_host.mol')
+        )
 
         aligner = AlignPointCloud(cube_center=host_centroid, num_points=64, step_size=0.4)
 

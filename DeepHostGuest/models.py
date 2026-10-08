@@ -85,7 +85,7 @@ class EdgeModel(torch.nn.Module):
         # source, target: [E, F_x], where E is the number of edges.
         # edge_attr: [E, F_e]
         # u: [B, F_u], where B is the number of graphs.
-        # batch: [E] with max entry B - 1.preprocessing.generate_structural_data.
+        # batch: [E] with max entry B - 1.
         out = torch.cat([src, dest, edge_attr], 1)
         return self.edge_mlp(out)
 
@@ -98,10 +98,10 @@ class NodeModel(torch.nn.Module):
 
     def forward(self, x, edge_index, edge_attr, u, batch):
         # x: [N, F_x], where N is the number of nodes.
-        # edge_index: [2.train_deepdock, E] with max entry N - 1.preprocessing.generate_structural_data.
+        # edge_index: [2, E] with max entry N - 1.
         # edge_attr: [E, F_e]
         # u: [B, F_u]
-        # batch: [N] with max entry B - 1.preprocessing.generate_structural_data.
+        # batch: [N] with max entry B - 1.
         row, col = edge_index
         out = torch.cat([x[row], edge_attr], dim=1)
         out = self.node_mlp_1(out)
@@ -228,7 +228,7 @@ class DeepDock(nn.Module):
 
     def compute_euclidean_distances_matrix(self, X, Y):
         # Based on: https://medium.com/@souravdey/l2-distance-matrix-vectorization-trick-26aa3247ac6c
-        # (X-Y)^2.train_deepdock = X^2.train_deepdock + Y^2.train_deepdock -2XY
+        # (X-Y)^2 = X^2 + Y^2 -2XY
         X = X.double()
         Y = Y.double()
 

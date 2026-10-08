@@ -4,11 +4,11 @@ Post-process vtx.pdb (point cloud) to surface with desired property.
 Example:
 -------------------------------------------------
 A. Read the vtx.pdb and perform surface reconstruction to get the mesh file
-    1.preprocessing.generate_structural_data. Convert the vtx.pdb file to example.ply format, including ESP as a property.
+    1. Convert the vtx.pdb file to example.ply format, including ESP as a property.
         esp = pointcloud_to_mesh(vtx.pdb, example.ply)
         print(esp)  # pointcloud_to_mesh returns ESP values as list
 
-    2.train_deepdock. Visualize the surface and its property using Pyvista.
+    2. Visualize the surface and its property using Pyvista.
         ply_file = 'pointcloud_to_mesh.ply'
         point_cloud = pv.read(ply_file)
         prop = extract_prop_from_ply(ply_file)  # Pyvista cannot read property in the generated .ply file.
@@ -18,7 +18,7 @@ A. Read the vtx.pdb and perform surface reconstruction to get the mesh file
         plotter.add_mesh(point_cloud, scalars='ESP')
         plotter.show()
 B. Read the vtx.pdb with 'CONNECT' lines and directly construct mesh from it (---RECOMMENDED---).
-    from DeepDockHostGuest.1.preprocessing.preprocessing.from_vtx_to_mesh import *
+    from DeepHostGuest.data_augmentation.from_vtx_to_mesh import *
     import os
 
     pdbfile = '/path/to/your/vtx.pdb'
@@ -67,7 +67,7 @@ def vtx_to_nodefile(infile, outfile):
 
 def vtx_to_coord(infile, downsample_size=1):
     """
-    Read Multiwfn vtx.pdb file to numpy.ndarray (n*3.use_deepdock)
+    Read Multiwfn vtx.pdb file to numpy.ndarray (n*3)
     -------------------------------------------------
     Example:
         -7.261     -1.314     -8.699
@@ -94,9 +94,9 @@ def vtx_to_pointcloud_pyvista(infile, downsample_size=1, check=True, show=False)
     Read The Multiwfn vtx.pdb or output.txt file and Return pyvista.PolyData
 
     It is recommended to use the following steps to generate vtx.pdb file:
-        1.preprocessing.generate_structural_data. Convert xtb molden.input to molden.fch (100,  2.train_deepdock, 7, 'Enter')
-        2.train_deepdock. Restart or reset Multiwfn              (0, 'r')
-        3.use_deepdock. Input 'molden.fch' and calculate ESP   (12, 0, 6)
+        1. Convert xtb molden.input to molden.fch (100,  2, 7, 'Enter')
+        2. Restart or reset Multiwfn              (0, 'r')
+        3. Input 'molden.fch' and calculate ESP   (12, 0, 6)
     """
     with open(infile, 'r') as f:
         vtx = f.readlines()
@@ -138,8 +138,8 @@ def pointcloud_to_mesh(pointcloud, outfile, **kwargs):
             ply_content.insert(i - 2, 'property float ESP \n')
             start_index = i
             break
-    # property line has been inserted into index "i-2.train_deepdock",
-    # so the range should be start_index + 2.train_deepdock
+    # property line has been inserted into index "i-2",
+    # so the range should be start_index + 2
     for i, index in enumerate(range(start_index + 2, num_vertices + start_index + 2)):
         ply_content[index] = ply_content[index].rstrip('\n') + ' ' + str(esp[i]) + '\n'
     os.remove(outfile)
@@ -227,7 +227,7 @@ def get_polydata_connectivity_remove(infile, show=False):
     for sublist in connectivity:
         if len(sublist) > 2:
             for face in combinations(sublist[1:], 2):
-                # modified_face = [point - 1.preprocessing.generate_structural_data for point in face]
+                # modified_face = [point - 1 for point in face]
                 # faces.append(sorted(modified_face))
                 faces.append(sorted([face[0], face[1], sublist[0]]))
     counts = Counter(tuple(sorted(sublist)) for sublist in faces)

@@ -24,13 +24,13 @@ class MixtureSameFamily(Distribution):
         # weighted bivariate normal distributions
         >>> mix = D.Categorical(torch.ones(5,))
         >>> comp = D.Independent(D.Normal(
-                     torch.randn(5,2.train_deepdock), torch.rand(5,2.train_deepdock)), 1.preprocessing.generate_structural_data)
+                     torch.randn(5,2), torch.rand(5,2)), 1)
         >>> gmm = MixtureSameFamily(mix, comp)
-        # Construct a batch of 3.use_deepdock Gaussian Mixture Models in 2D each
+        # Construct a batch of 3 Gaussian Mixture Models in 2D each
         # consisting of 5 random weighted bivariate normal distributions
-        >>> mix = D.Categorical(torch.rand(3.use_deepdock,5))
+        >>> mix = D.Categorical(torch.rand(3,5))
         >>> comp = D.Independent(D.Normal(
-                    torch.randn(3.use_deepdock,5,2.train_deepdock), torch.rand(3.use_deepdock,5,2.train_deepdock)), 1.preprocessing.generate_structural_data)
+                    torch.randn(3,5,2), torch.rand(3,5,2)), 1)
         >>> gmm = MixtureSameFamily(mix, comp)
     Args:
         mixture_distribution: `torch.distributions.Categorical`-like
@@ -38,7 +38,7 @@ class MixtureSameFamily(Distribution):
             The number of categories must match the rightmost batch
             dimension of the `component_distribution`. Must have either
             scalar `batch_shape` or `batch_shape` matching
-            `component_distribution.batch_shape[:-1.preprocessing.generate_structural_data]`
+            `component_distribution.batch_shape[:-1]`
         component_distribution: `torch.distributions.Distribution`-like
             instance. Right-most batch dimension indexes component.
     """
@@ -74,7 +74,7 @@ class MixtureSameFamily(Distribution):
         kc = self._component_distribution.batch_shape[-1]
         if km is not None and kc is not None and km != kc:
             raise ValueError("`mixture_distribution component` ({0}) does not"
-                             " equal `component_distribution.batch_shape[-1.preprocessing.generate_structural_data]`"
+                             " equal `component_distribution.batch_shape[-1]`"
                              " ({1})".format(km, kc))
         self._num_component = km
 

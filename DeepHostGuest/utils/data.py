@@ -33,13 +33,35 @@ def read_ply(path):
 
 
 class HostGuest_dataset(Dataset):
-    def __init__(self, root, removeHs=True, transform=None, pre_transform=None):
+    """PyG dataset pairing one host ESP mesh (``host_ply/*.ply``) with one guest
+    molecule (``guest_mol/*.mol``).
+
+    ``raw_dir`` is expected to contain::
+
+        <root>/host_ply/<name>_1.ply     # ESP surface mesh of the host
+        <root>/guest_mol/<name>_2.mol    # guest structure
+
+    and the processed dataset is a list of ``(host_graph, guest_graph)`` tuples
+    stored in ``<root>/processed/data.pt``.
+    """
+
+    def __init__(self, root, removeHs=True, transform=None, pre_transform=None, pre_filter=None):
         self.removeHs = removeHs
-        super(HostGuest_dataset, self).__init__(root, transform, pre_transform)
-        self.processed_folder = './data/processed'
-        self.root = root
-        data_path = os.path.join(self.processed_dir, f'data.pt')
-        self.data_list = torch.load(data_path)
+        # `pre_filter` was referenced in process() but never accepted here, so it
+        # could not be set; forward it to the PyG Dataset as intended.
+        super(HostGuest_dataset, self).__init__(root, transform, pre_transform, pre_filter)
+        data_path = self.processed_paths[0]
+        if not os.path.exists(data_path):
+            raise FileNotFoundError(
+                f"Processed dataset not found at '{data_path}'. "
+                "Run `HostGuest_dataset(root).process()` once to build it from "
+                "the host_ply/ and guest_mol/ folders."
+            )
+        # The checkpoint is a locally produced PyTorch pickle, so
+        # weights_only=False is required (PyTorch >= 2.6 defaults to True and
+        # would refuse to unpickle a list of torch_geometric Data objects).
+        # Only load data.pt files that you generated yourself.
+        self.data_list = torch.load(data_path, map_location='cpu', weights_only=False)
 
     @property
     def raw_file_names(self):
@@ -52,20 +74,23 @@ class HostGuest_dataset(Dataset):
     def process(self):
         host_path = os.path.join(self.root, "host_ply")
         host_data = self.read_ply_files(folder_path=host_path)
-        prefixes = [i.rstrip('.ply') for i in host_data]
+        # NOTE: ``str.rstrip('.ply')`` would strip any trailing combination of
+        # the characters '.', 'p', 'l', 'y' (e.g. 'cage_ally.ply' -> 'cage_al'),
+        # so the extension is removed with os.path.splitext instead.
+        prefixes = [os.path.splitext(i)[0] for i in host_data]
 
         # Pair host and guest data and obtain the mol data
         paired_data = [(f"{prefix}.ply", f"{prefix.replace('_1_', '_2_')}.mol") for prefix in prefixes]
-        graph_data = self.mol_to_graph(paired_data)
-        data_list = graph_data
+        data_list = self.mol_to_graph(paired_data)
 
         if self.pre_filter is not None:
-            data_list = [data for data in self.data_list if self.pre_filter(data)]
+            data_list = [data for data in data_list if self.pre_filter(data)]
 
         if self.pre_transform is not None:
-            data_list = [self.pre_transform(data) for data in self.data_list]
+            data_list = [self.pre_transform(data) for data in data_list]
 
         torch.save(data_list, self.processed_paths[0])
+        self.data_list = data_list
 
     @staticmethod
     def read_ply_files(folder_path=''):
@@ -86,6 +111,11 @@ class HostGuest_dataset(Dataset):
             hostmol_path = os.path.join(host_path, host_file)
             guestmol_path = os.path.join(guest_path, guest_file)
             guest = Chem.MolFromMolFile(guestmol_path, removeHs=self.removeHs, sanitize=True)
+            if guest is None:
+                raise ValueError(
+                    f"RDKit could not parse guest molecule '{guestmol_path}'. "
+                    "Check that the file exists and is a valid mol/mol2 block."
+                )
 
             guest_graph = mol2graph.mol_to_nx(guest, self.removeHs)
             guest_data = from_networkx(guest_graph)
@@ -129,7 +159,14 @@ def compute_cluster_batch_index(cluster, batch):
 
 
 def Mol2MolSupplier(file=None, sanitize=True, cleanupSubstructures=True):
-    # Taken from https://chem-workflows.com/articles/2020/03/23/building-a-multi-molecule-mol2-reader-for-rdkit-v2/
+    """Read every ``@<TRIPOS>MOLECULE`` block of a multi-molecule mol2 file.
+
+    Returns a list of RDKit molecules; blocks that RDKit cannot parse are
+    silently skipped (the caller can compare ``len(result)`` with the number of
+    ``@<TRIPOS>MOLECULE`` blocks to detect this).
+
+    Taken from https://chem-workflows.com/articles/2020/03/23/building-a-multi-molecule-mol2-reader-for-rdkit-v2/
+    """
     mols = []
     with open(file, 'r') as f:
         doc = [line for line in f.readlines()]
@@ -138,17 +175,20 @@ def Mol2MolSupplier(file=None, sanitize=True, cleanupSubstructures=True):
     finish = [index - 1 for (index, p) in enumerate(doc) if '@<TRIPOS>MOLECULE' in p]
     finish.append(len(doc))
 
+    # The molecule name is optional: initialise the list so that a file without
+    # 'Name' entries does not raise NameError further down.
+    name = []
     try:
         name = [doc[index].rstrip().split('\t')[-1] for (index, p) in enumerate(doc) if 'Name' in p]
-    except:
-        pass
+    except (IndexError, AttributeError):
+        name = []
 
     interval = list(zip(start, finish[1:]))
     for n, i in enumerate(interval):
         block = ",".join(doc[i[0]:i[1]]).replace(',', '')
         m = Chem.MolFromMol2Block(block, sanitize=sanitize, cleanupSubstructures=cleanupSubstructures)
         if m is not None:
-            if name:
+            if n < len(name):
                 m.SetProp('Name', name[n])
             mols.append(m)
 

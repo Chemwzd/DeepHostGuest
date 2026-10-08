@@ -5,7 +5,7 @@ The process can be executed step by step, following the provided example indices
 Example:
 -------------------------------------------------
     import os
-    from DeepDockHostGuest.preprocessing.run_multisim import *
+    from DeepHostGuest.data_augmentation.run_multisim import *
     import multiprocessing
     import functools
     from tqdm import tqdm
@@ -26,7 +26,7 @@ Example:
             pool.map(partial_run_all, job_names)
 
 
-    2.train_deepdock. Perform trajectory clustering using $SCHRODINGER/run trj_cluster.py
+    2. Perform trajectory clustering using $SCHRODINGER/run trj_cluster.py
 
         path = '/path/to/all_your_trajectories' # generate_work_dir() can copy a new path to perform clustering.
                                                 # It is recommended to run generate_work_dir() first.
@@ -49,7 +49,7 @@ Example:
                     print(error)
 
 
-    3.use_deepdock. Extract structures from each cluster into .pbd files
+    3. Extract structures from each cluster into .pbd files
 
         # basedir contains all of the jobname directories(basedir/jobname/clusters/jobname_members-out.cms)
         basedir = "/path/to/your/basedir"
@@ -139,7 +139,6 @@ import os
 import time
 import shutil
 import json
-from sugar.molecule import HostMolecule
 import numpy as np
 import subprocess
 import networkx as nx
@@ -148,6 +147,9 @@ from rdkit.Chem import AllChem
 from collections import Counter
 
 
+# NOTE: this module previously imported ``HostMolecule`` from the internal
+# ``sugar`` toolkit, although the name was never used here.  The import has been
+# removed so that the released repository runs with RDKit alone.
 def run_command(command):
     """
     Return the state of command line.
@@ -159,7 +161,7 @@ def run_command(command):
 
 def generate_work_dir(infile_path, out_path):
     """
-    Generate a copied workdir for step 2.train_deepdock.
+    Generate a copied workdir for step 2.
     Only the files in need will be copied to {out_path}.
     """
     if os.path.exists(out_path):
@@ -494,7 +496,7 @@ class RunMultisim:
 
     def trj_cluster(self, iter_list):
         """
-        'out_name' should follow the form provided in the script '3.use_deepdock.ClusterTrajs.py'
+        'out_name' should follow the form provided in the script '3.ClusterTrajs.py'
         """
         cms_file, trj_file, out_name, num_clusters = iter_list[0], iter_list[1], iter_list[2], iter_list[3]
         check_path = out_name.split('/')

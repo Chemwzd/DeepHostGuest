@@ -11,7 +11,6 @@ from rdkit.Chem import rdmolops
 from rdkit.Chem import AllChem, Descriptors, Crippen, rdMolDescriptors, DataStructs, rdFingerprintGenerator
 from collections import Counter
 from rdkit.Chem import AllChem
-from sugar.molecule import HostMolecule
 import pywindow as pw
 from rdkit.Chem.rdMolDescriptors import GetUSR, GetUSRCAT
 from rdkit.Chem import MACCSkeys
@@ -19,9 +18,12 @@ from prolif.interactions.interactions import VdWContact
 
 sys.path.append('/path/to/DeepHostGuest/Parent/Folder')
 
-import sugar.pywindow.utilities as util
-
-_old_optimise_z = util.optimise_z
+# `pywindow` is a public package; the internal `sugar` fork ships an identical
+# copy of `utilities.py` and is used as a fallback only.
+try:
+    from pywindow.utilities import optimise_z as _old_optimise_z
+except ImportError:  # pragma: no cover - depends on user environment
+    from sugar.pywindow.utilities import optimise_z as _old_optimise_z
 
 
 def _optimise_z_patched(z, *args, **kwargs):
@@ -398,12 +400,17 @@ def get_mf2_bits(mol: Chem.Mol, radius: int = 1, nbits: int = 64) -> np.ndarray:
     return arr  # shape (64,)
 
 
-def get_mol_distance(sugar_mol1, sugar_mol2):
-    com1 = sugar_mol1.get_centroid_remove_h()
-    com2 = sugar_mol2.get_centroid_remove_h()
+def _heavy_atom_centroid(mol):
+    """Centroid of the heavy atoms (RDKit-only replacement for
+    ``HostMolecule.get_centroid_remove_h()``)."""
+    conf = mol.GetConformer()
+    idx = [a.GetIdx() for a in mol.GetAtoms() if a.GetAtomicNum() > 1]
+    return np.asarray([conf.GetAtomPosition(i) for i in idx], dtype=np.float64).mean(axis=0)
 
-    dis = np.linalg.norm(com1 - com2)
-    return dis
+
+def get_mol_distance(mol1, mol2):
+    """Distance between the heavy-atom centroids of two molecules."""
+    return np.linalg.norm(_heavy_atom_centroid(mol1) - _heavy_atom_centroid(mol2))
 
 
 def get_morgan_count(mol, radius=2, nBits=2048):

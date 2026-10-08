@@ -126,6 +126,30 @@ class _PenaltyCalculator:
         return abs(host_guest_terms), abs(gg_terms)
 
 
+def _ensure_conformer(mol, seed=1000):
+    """Return ``mol`` with a 3D conformer, embedding one when necessary.
+
+    RDKit's ``GetConformer()`` raises ``ValueError`` when no conformer is
+    present, and ``EmbedMolecule`` returns ``-1`` on failure; both cases are
+    turned into an explicit error instead of failing later inside the force
+    field code.
+    """
+    try:
+        mol.GetConformer()
+        return mol
+    except Exception:
+        pass
+    work_mol = Chem.AddHs(mol)
+    if AllChem.EmbedMolecule(work_mol, randomSeed=int(seed) if seed else -1) != 0:
+        raise ValueError(
+            "RDKit could not generate a 3D conformer for the guest molecule. "
+            "Provide a molecule that already carries coordinates, or embed it "
+            "explicitly (e.g. AllChem.EmbedMolecule) before docking."
+        )
+    AllChem.MMFFOptimizeMolecule(work_mol)
+    return work_mol
+
+
 def score_compound(guest_mol, host_ply, model, removeHs=False, dist_threshold=6.,
                    seed=1000, device='cpu', host_mol=None,
                    penalty=False, host_guest_rm=3., guest_guest_rm=1.5):
@@ -138,12 +162,7 @@ def score_compound(guest_mol, host_ply, model, removeHs=False, dist_threshold=6.
         torch.manual_seed(seed)
 
     if isinstance(guest_mol, Chem.Mol):
-        try:
-            guest_mol.GetConformer()
-        except Exception:
-            guest_mol = Chem.AddHs(guest_mol)
-            AllChem.EmbedMolecule(guest_mol)
-            AllChem.MMFFOptimizeMolecule(guest_mol)
+        guest_mol = _ensure_conformer(guest_mol, seed=seed)
         guest = from_networkx(mol2graph.mol_to_nx(guest_mol, removeHs=removeHs))
         guest = Batch.from_data_list([guest])
     else:
@@ -167,7 +186,14 @@ def score_compound(guest_mol, host_ply, model, removeHs=False, dist_threshold=6.
     # [SPEED-UP] use fast probability
     prob = calculate_probablity_fast(pi, sigma, mu, dist)
     if dist_threshold:
-        prob[torch.where(dist_t > dist_threshold)[0]] = 0.0
+        # Mask host-guest pairs beyond the cutoff.  The mask is evaluated in
+        # NumPy on CPU: indexing a NumPy array with a CUDA index tensor raises
+        # "can't convert cuda:0 device type tensor to numpy", which used to
+        # break score_compound whenever device='cuda'.
+        dist_flat = np.asarray(dist_t.detach().cpu().numpy()).reshape(-1)
+        mask_idx = np.where(dist_flat > float(dist_threshold))[0]
+        if mask_idx.size:
+            prob[mask_idx] = 0.0
     # Docking objective: negative SUM of probability densities (-sum p), not the
     # negative log-likelihood used during training. Lower is better.
     score = -np.sum(prob, axis=0)
@@ -179,6 +205,27 @@ def score_compound(guest_mol, host_ply, model, removeHs=False, dist_threshold=6.
         p_hg, p_gg = pen.penalty(guest_mol)
         score += p_hg + p_gg
     return score
+
+
+def calculate_penalty_all(host_mol, guest_mol, host_guest_rm=3., guest_guest_rm=1.5, scale_factor=1,
+                          removeHs=False):
+    """Steric penalty for a host-guest pair, evaluated in one call.
+
+    Legacy helper kept for scripts that drive ``OptimizeConformation`` directly
+    (the original module referenced this name but never defined it, which made
+    the non-cached penalty path raise ``NameError``).  It is a thin wrapper
+    around :class:`_PenaltyCalculator`, so the numerical result is identical to
+    the cached path used by :func:`dock_compound`.
+
+    Returns
+    -------
+    (float, float)
+        ``(host_guest_penalty, guest_guest_penalty)``.
+    """
+    pen = _PenaltyCalculator(host_mol, guest_mol, removeHs=removeHs,
+                             host_guest_rm=host_guest_rm, guest_guest_rm=guest_guest_rm)
+    p_hg, p_gg = pen.penalty(guest_mol)
+    return p_hg * scale_factor, p_gg * scale_factor
 
 
 def count_num_opt_parameters(guest_mol):
@@ -201,12 +248,7 @@ def dock_compound(guest_mol, host_ply, model, removeHs=True, dist_threshold=6.,
         torch.manual_seed(seed)
 
     if isinstance(guest_mol, Chem.Mol):
-        try:
-            guest_mol.GetConformer()
-        except Exception:
-            guest_mol = Chem.AddHs(guest_mol)
-            AllChem.EmbedMolecule(guest_mol)
-            AllChem.MMFFOptimizeMolecule(guest_mol)
+        guest_mol = _ensure_conformer(guest_mol, seed=seed)
         guest = from_networkx(mol2graph.mol_to_nx(guest_mol, removeHs=removeHs))
         guest = Batch.from_data_list([guest])
     else:
@@ -485,12 +527,7 @@ def get_torsions(mol_list):
 
 def get_random_conformation(mol, rotable_bonds=None, seed=None, canonicalize=True):
     if isinstance(mol, Chem.Mol):
-        try:
-            mol.GetConformer()
-        except Exception:
-            mol = Chem.AddHs(mol)
-            AllChem.EmbedMolecule(mol)
-            AllChem.MMFFOptimizeMolecule(mol)
+        mol = _ensure_conformer(mol, seed=seed or 1000)
     else:
         raise Exception('mol should be an RDKIT molecule')
     if seed:

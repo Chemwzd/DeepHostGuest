@@ -132,7 +132,7 @@ def get_torsions(mol_list, bidirectional=True):
                             or (b2.GetIdx() == b1.GetIdx())):
                         continue
                     idx4 = b2.GetOtherAtomIdx(idx3)
-                    # skip 3.use_deepdock-membered rings
+                    # skip 3-membered rings
                     if (idx4 == idx1):
                         continue
                     torsionList.append(

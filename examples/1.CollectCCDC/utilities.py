@@ -1,16 +1,47 @@
+"""Helpers for curating host-guest structures from the Cambridge Structural Database.
+
+This step is NOT required to reproduce the results of the paper: the curated
+dataset is distributed separately (see the Zenodo record linked in the README),
+so this module and its two license-gated / internal dependencies are only needed
+if you want to rebuild the dataset from scratch.
+
+Extra requirements
+------------------
+* ``ccdc``  -- CSD Python API (commercial license, https://www.ccdc.cam.ac.uk).
+* ``sugar`` -- internal toolkit providing ``HostMolecule`` and the pywindow
+  cavity analysis used for the pore/window descriptors.  It is not distributed
+  with this repository; only :func:`preprocess_cif`, :func:`try_to_kekulize` and
+  the pore-analysis helpers below need it.
+"""
 import warnings
 
 import numpy as np
 import os
 import re
 import shutil
-from sugar.molecule import HostMolecule
+
+try:
+    from sugar.molecule import HostMolecule
+except ImportError as _exc:  # pragma: no cover - depends on user environment
+    HostMolecule = None
+    _SUGAR_IMPORT_ERROR = _exc
+
 from ccdc import io
 from rdkit import Chem
 from rdkit.Chem import AllChem
 from collections import Counter, OrderedDict
 from UFF4MOF_constants import UFF4MOF_atom_parameters
 import subprocess
+
+
+def _require_sugar():
+    """Raise a clear error when the optional ``sugar`` toolkit is missing."""
+    if HostMolecule is None:
+        raise ImportError(
+            "This helper requires the optional 'sugar' toolkit (HostMolecule), "
+            "which is not distributed with this repository. Install it and make "
+            "sure it is importable, or use the pre-curated dataset instead."
+        ) from _SUGAR_IMPORT_ERROR
 
 metal_element = ['Li', 'Be', 'Na', 'Mg', 'Al', 'K', 'Ca', 'Sc', 'Ti', 'V', 'Cr', 'Mn', 'Fe', 'Co', 'Ni', 'Cu', 'Zn',
                  'Ga', 'Ge', 'Rb', 'Sr', 'Y', 'Zr', 'Nb', 'Mo', 'Tc', 'Ru', 'Rh', 'Pd', 'Ag', 'Cd', 'In', 'Sn', 'Sb',
@@ -85,7 +116,7 @@ def write_components(components, basedir, code):
 #     for molfile in molfiles:
 #         sugar_mol = HostMolecule.init_from_mol_file(molfile)
 #         rdmol = Chem.MolFromMolFile(molfile, removeHs=False)
-#         has_hydrogen = any(atom.GetAtomicNum() == 1.preprocessing.generate_structural_data for atom in rdmol.GetAtoms())
+#         has_hydrogen = any(atom.GetAtomicNum() == 1 for atom in rdmol.GetAtoms())
 #         has_bond = rdmol.GetNumBonds() > 0
 #         if not has_bond or not has_hydrogen:
 #             remove_exception_files_all(components, basedir, code)
@@ -100,7 +131,7 @@ def write_components(components, basedir, code):
 #             # print(f'{molfile} does not have a pore.')
 #
 #     formula_count = Counter(formula_list)
-#     formula0, formula1, pore0, pore1 = list(formula_count.keys())[0], list(formula_count.keys())[1.preprocessing.generate_structural_data], 0, 0
+#     formula0, formula1, pore0, pore1 = list(formula_count.keys())[0], list(formula_count.keys())[1], 0, 0
 #     for i, formula in enumerate(formula_list):
 #         if formula == formula0:
 #             pore0 += pore_diameter_list[i]
@@ -163,8 +194,10 @@ def identify_host_guest_multiple(components, basedir, code, threshold=2.,dist_th
                 revised_mol = revise_metal_mol(molfile, metal=ox_dict, from_atoms=fromatoms,
                                                sanitize=True, kekulize=False, reset_charge=True, reset_N=True)
                 Chem.MolToMolFile(revised_mol, molfile)
+                _require_sugar()
                 sugar_mol = HostMolecule.init_from_rdkit(revised_mol)
             else:
+                _require_sugar()
                 sugar_mol = HostMolecule.init_from_mol_file(molfile)
             rdmol = Chem.MolFromMolFile(molfile, removeHs=False)
             has_hydrogen = any(atom.GetAtomicNum() == 1 for atom in rdmol.GetAtoms())
@@ -474,7 +507,7 @@ def format_molecular_formula(formula):
         count = re.search(rf'{element}\d*', formula)
         if count:
             if re.search(rf'{element}$', count.group()):
-                formatted_formula += count.group() + '1.preprocessing.generate_structural_data' + ' '
+                formatted_formula += count.group() + '1' + ' '
             else:
                 formatted_formula += count.group() + ' '
 
@@ -483,6 +516,7 @@ def format_molecular_formula(formula):
 
 def get_pore_windows(sugarmol):
     """
+    _require_sugar()
     sugarmol = HostMolecule.init_from_mol_file(molfile)
 
     ###BUG in window calculation
@@ -494,6 +528,7 @@ def get_pore_windows(sugarmol):
 
 def get_com_distance(sugarmol1, sugarmol2):
     """
+    _require_sugar()
     sugarmol = HostMolecule.init_from_mol_file(molfile)
     """
     com1 = sugarmol1.get_centroid_remove_h()
@@ -526,7 +561,7 @@ def get_torsions(rdmol):
                             or (b2.GetIdx() == b1.GetIdx())):
                         continue
                     idx4 = b2.GetOtherAtomIdx(idx3)
-                    # skip 3.use_deepdock-membered rings
+                    # skip 3-membered rings
                     if (idx4 == idx1):
                         continue
                     # skip torsions that include hydrogens
@@ -572,10 +607,10 @@ class XTBCalculation:
     """
     Generate molden.input and convert it into mesh file.
 
-    Example: (Can be seen in /examples/2.preprocessing)
+    Example: (Can be seen in /examples/2)
     -------------------------------------------------
-    1.preprocessing.generate_structural_data. Execute xtb to generate molden.input
-        from DeepDockHostGuest.1.preprocessing.preprocessing.generate_mesh import *
+    1. Execute xtb to generate molden.input
+        from DeepHostGuest.data_augmentation.generate_mesh import *
         from tqdm import tqdm
 
         xtb = ESP('/path/to/xtb', '/path/to/Multiwfn)
@@ -587,7 +622,7 @@ class XTBCalculation:
         for name in tqdm(names):
             print(f"======Processing {name}======")
             host_files = [i for i in os.listdir(os.path.join(host_path, name)) if i.endswith('.xyz')]
-            files_prefix = [i.rstrip('_host.xyz') for i in host_files]
+            files_prefix = [os.path.splitext(i)[0] for i in host_files]
             for prefix in tqdm(files_prefix):
                 try:
                     host_xtb, _ = xtb.run_xtb(
@@ -669,7 +704,7 @@ class XTBCalculation:
                 print(f"{fchpath} has been calculated to vtx.pdb!!")
             return 0, 0
         current_directory = os.getcwd()
-        fch_to_esp_txt = ['12\n', '3.use_deepdock\n', f'{grid_points_spacing}\n', '0\n', '-2\n', '\n', '66\n', '\n']
+        fch_to_esp_txt = ['12\n', '3\n', f'{grid_points_spacing}\n', '0\n', '-2\n', '\n', '66\n', '\n']
         with open(os.path.join(workdir, 'fch2esp.txt'), 'w') as f:
             f.writelines(fch_to_esp_txt)
         if 'molden.fch' not in os.listdir(workdir):
@@ -695,7 +730,7 @@ class XTBCalculation:
         os.chdir(workdir)
         if 'settings.ini' not in os.listdir(workdir):
             shutil.copy(self.multiwfn_settings, workdir)
-        fch_to_loba_txt = ['19\n', '1.preprocessing.generate_structural_data\n', '8\n', '100\n', f'{threshold}\n']
+        fch_to_loba_txt = ['19\n', '1\n', '8\n', '100\n', f'{threshold}\n']
         with open(os.path.join(workdir, 'fch2loba.txt'), 'w') as f:
             f.writelines(fch_to_loba_txt)
         command = f'{self.multiwfn} {fchpath} < fch2loba.txt |tee fch2loba.log'

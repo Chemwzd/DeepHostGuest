@@ -8,16 +8,51 @@ from rdkit.Chem.rdForceFieldHelpers import (MMFFHasAllMoleculeParams,
 from rdkit.Chem.AllChem import (MMFFGetMoleculeForceField, EmbedMultipleConfs, UFFOptimizeMolecule,
                                 MMFFGetMoleculeProperties, MMFFOptimizeMolecule)
 from pydockrmsd.dockrmsd import PyDockRMSD
-import pydockrmsd.hungarian as hungarian
 import numpy as np
 import os
 import networkx as nx
-import warnings
-import subprocess
-import shutil
 import re
-from sugar.molecule import HostMolecule
-from sugar.atom import _metal_element
+import shutil
+import subprocess
+
+# Elements treated as "metal centres" when reading host structures.  This set is
+# inlined here so that the released package has no dependency on the internal
+# ``sugar`` toolkit (which is only needed by two helper functions below).
+METAL_ELEMENTS = frozenset({
+    'Li', 'Be', 'Na', 'Mg', 'Al', 'K', 'Ca', 'Sc', 'Ti', 'V', 'Cr', 'Mn',
+    'Fe', 'Co', 'Ni', 'Cu', 'Zn', 'Ga', 'Ge', 'Rb', 'Sr', 'Y', 'Zr',
+    'Nb', 'Mo', 'Tc', 'Ru', 'Rh', 'Pd', 'Ag', 'Cd', 'In', 'Sn', 'Sb',
+    'Cs', 'Ba', 'La', 'Ce', 'Pr', 'Nd', 'Pm', 'Sm', 'Eu', 'Gd', 'Tb',
+    'Dy', 'Ho', 'Er', 'Tm', 'Yb', 'Lu', 'Hf', 'Ta', 'W', 'Re', 'Os',
+    'Ir', 'Pt', 'Au', 'Hg', 'Tl', 'Pb', 'Bi', 'Po', 'Fr', 'Ra', 'Ac',
+    'Th', 'Pa', 'U', 'Np', 'Pu', 'Am', 'Cm', 'Bk', 'Cf', 'Es', 'Fm',
+    'Md', 'No', 'Lr', 'Rf', 'Db', 'Sg', 'Bh', 'Hs', 'Mt', 'Ds',
+    'Rg', 'Cn', 'Uut', 'Fl', 'Uup', 'Lv',
+})
+
+# ``_metal_element`` was the name used by the internal toolkit; keep the alias so
+# downstream scripts that imported it keep working.
+_metal_element = METAL_ELEMENTS
+
+
+def _require_sugar(feature: str):
+    """Import the optional internal ``sugar`` toolkit or explain how to obtain it.
+
+    Only the host-model helpers (:func:`get_metals_from_molfile`,
+    :func:`get_elements_from_molfile`) need it.  Everything else in this module
+    works with RDKit alone.
+    """
+    try:
+        from sugar.molecule import HostMolecule
+    except ImportError as exc:  # pragma: no cover - depends on user environment
+        raise ImportError(
+            f"'{feature}' requires the optional 'sugar' toolkit "
+            "(HostMolecule), which is not distributed with this repository. "
+            "Install 'sugar' and make sure it is importable, or use RDKit "
+            "directly (`Chem.MolFromMolFile(path)` plus "
+            "`[a.GetSymbol() for a in mol.GetAtoms()]`)."
+        ) from exc
+    return HostMolecule
 
 
 def kekulize_mol_file(molfile, kekulized_molfile):
@@ -97,6 +132,37 @@ def calculate_euclidean_distance(point1, point2):
     return np.sqrt(np.sum((point1 - point2) ** 2))
 
 
+def heavy_atom_centroid(mol_or_path, sanitize=False):
+    """Centroid of the heavy (non-hydrogen) atoms, in Angstrom.
+
+    Replaces ``HostMolecule.get_centroid_remove_h()`` from the internal toolkit
+    with plain RDKit, so the ESP-alignment step runs without the optional
+    ``sugar`` dependency.  The value returned is the arithmetic mean of the
+    heavy-atom coordinates, identical to the original implementation.
+
+    Parameters
+    ----------
+    mol_or_path : rdkit.Chem.Mol or str
+        Molecule, or path to a ``.mol`` file carrying 3D coordinates.
+    sanitize : bool
+        Forwarded to ``Chem.MolFromMolFile`` when a path is given.  Metal-organic
+        cages from CIF files often need ``sanitize=False``.
+    """
+    if isinstance(mol_or_path, Chem.Mol):
+        mol = mol_or_path
+    else:
+        mol = Chem.MolFromMolFile(mol_or_path, removeHs=False, sanitize=sanitize)
+        if mol is None:
+            raise ValueError(f'Could not read molecule file: {mol_or_path}')
+
+    conf = mol.GetConformer()
+    heavy_idx = [atom.GetIdx() for atom in mol.GetAtoms() if atom.GetAtomicNum() > 1]
+    if not heavy_idx:
+        raise ValueError('Molecule has no heavy atoms.')
+    positions = np.asarray([conf.GetAtomPosition(idx) for idx in heavy_idx], dtype=np.float64)
+    return positions.mean(axis=0)
+
+
 def calculate_rmsd_from_file(mol_file1, mol_file2, removeHs=True):
     if is_align(mol_file1, mol_file2):
         mol1 = Chem.MolFromMolFile(mol_file1, removeHs=removeHs, sanitize=True)
@@ -163,7 +229,7 @@ def get_torsions(rdmol):
                             or (b2.GetIdx() == b1.GetIdx())):
                         continue
                     idx4 = b2.GetOtherAtomIdx(idx3)
-                    # skip 3.use_deepdock-membered rings
+                    # skip 3-membered rings
                     if (idx4 == idx1):
                         continue
                     # skip torsions that include hydrogens
@@ -373,68 +439,91 @@ def get_disconnected_mols(mol):
 def get_xtb_free_energy(struc_file, calculation_dir, xtb_path,
                         shermo_main_folder, opt=False, olevel='normal',
                         charge=0, other_keywords=' --alpb water'):
+    """Run xTB (Hessian) + Shermo on ``struc_file`` and return thermochemical terms.
+
+    All work happens inside ``calculation_dir`` (created when missing).  The
+    calling process' working directory is restored on exit, including the error
+    path, so this function is safe to call in a loop over many structures.
+
+    Returns
+    -------
+    tuple of float
+        ``(G_corr, H_corr, U_corr, G, H, U)`` in kcal/mol.
+    """
+    calculation_dir = os.path.abspath(calculation_dir)
     os.makedirs(calculation_dir, exist_ok=True)
     struc_file_basename = os.path.basename(struc_file)
-    os.chdir(calculation_dir)
-    if not os.path.exists(struc_file_basename):
-        shutil.copy(struc_file, calculation_dir)
 
-    if 'sp.out' and 'g98.out' in os.listdir(calculation_dir):
-        print(f'{struc_file_basename} has been calculated')
-        pass
-    else:
-        xtb_hess_command = f'{xtb_path} {calculation_dir}/{struc_file_basename} -c {charge}'
-        if opt:
-            xtb_hess_command += f' --ohess {olevel}'
-            sp_struc_file = f'{calculation_dir}/xtbopt{os.path.splitext(struc_file)[1]}'
+    current_directory = os.getcwd()
+    try:
+        os.chdir(calculation_dir)
+        if not os.path.exists(struc_file_basename):
+            shutil.copy(struc_file, calculation_dir)
+
+        # Reuse results of a previous run only when BOTH the xTB thermo output
+        # (g98.out) and the single-point output (sp.out) are present.  (The
+        # original check `if 'sp.out' and 'g98.out' in os.listdir(...)` was
+        # truthy whenever g98.out existed, because a non-empty string is truthy.)
+        sp_out_path = os.path.join(calculation_dir, 'sp.out')
+        g98_out_path = os.path.join(calculation_dir, 'g98.out')
+        if os.path.exists(sp_out_path) and os.path.exists(g98_out_path):
+            print(f'{struc_file_basename} has been calculated')
         else:
-            xtb_hess_command += ' --hess'
-            sp_struc_file = f'{calculation_dir}/{struc_file_basename}'
-        if other_keywords:
-            xtb_hess_command += other_keywords
+            xtb_hess_command = f'{xtb_path} {calculation_dir}/{struc_file_basename} -c {charge}'
+            if opt:
+                xtb_hess_command += f' --ohess {olevel}'
+                sp_struc_file = f'{calculation_dir}/xtbopt{os.path.splitext(struc_file)[1]}'
+            else:
+                xtb_hess_command += ' --hess'
+                sp_struc_file = f'{calculation_dir}/{struc_file_basename}'
+            if other_keywords:
+                xtb_hess_command += other_keywords
 
-        xtb_ohess_out, xtb_ohess_error = run_command(xtb_hess_command)
+            run_command(xtb_hess_command)
 
-        xtb_sp_command = f'{xtb_path} {sp_struc_file} -c {charge}'
-        if other_keywords:
-            xtb_sp_command += other_keywords
-        xtb_sp_command += ' > sp.out'
-        xtb_sp_out, xtb_sp_error = run_command(xtb_sp_command)
+            xtb_sp_command = f'{xtb_path} {sp_struc_file} -c {charge}'
+            if other_keywords:
+                xtb_sp_command += other_keywords
+            xtb_sp_command += ' > sp.out'
+            run_command(xtb_sp_command)
 
-    shermo_executable = os.path.join(shermo_main_folder, 'Shermo')
-    shermo_settings = os.path.join(shermo_main_folder, 'settings.ini')
-    shutil.copy(shermo_settings, calculation_dir)
+        shermo_executable = os.path.join(shermo_main_folder, 'Shermo')
+        shermo_settings = os.path.join(shermo_main_folder, 'settings.ini')
+        shutil.copy(shermo_settings, calculation_dir)
 
-    with open('sp.out', 'r') as f:
-        sp_out = f.read()
+        with open(sp_out_path, 'r') as f:
+            sp_out = f.read()
 
-    match = re.search(r"TOTAL ENERGY\s+(-?\d+\.\d+)", sp_out)
-    if match:
-        total_energy = float(match.group(1))
-    else:
-        raise ValueError('No total energy found in sp.out')
+        match = re.search(r"TOTAL ENERGY\s+(-?\d+\.\d+)", sp_out)
+        if match:
+            total_energy = float(match.group(1))
+        else:
+            raise ValueError(f'No total energy found in {sp_out_path}')
 
-    shermo_out, shermo_errors = run_command(f"{shermo_executable} g98.out -E {total_energy} |tee shermo.log")
-    with open('shermo.log', 'r') as f:
-        shermo_log = f.readlines()
-    G_corr, H_corr, U_corr, G, H, U = 0, 0, 0, 0, 0, 0
-    for line in shermo_log:
-        if line.startswith(' Thermal correction to U'):
-            U_corr = float(line.split()[8])
-        elif line.startswith(' Thermal correction to G'):
-            G_corr = float(line.split()[8])
-        elif line.startswith(' Thermal correction to H'):
-            H_corr = float(line.split()[8])
-        elif line.startswith(' Sum of electronic energy and thermal correction to U:'):
-            U = float(line.split()[9])
-        elif line.startswith(' Sum of electronic energy and thermal correction to G:'):
-            G = float(line.split()[9])
-        elif line.startswith(' Sum of electronic energy and thermal correction to H'):
-            H = float(line.split()[9])
-    if 0 in (U_corr, G_corr, H_corr, G, H, U):
-        raise ValueError('Missing Values for one of (G_corr, H_corr, U_corr, G, H, U)')
-    convertor = 627.510
-    return G_corr * convertor, H_corr * convertor, U_corr * convertor, G * convertor, H * convertor, U * convertor
+        run_command(f"{shermo_executable} g98.out -E {total_energy} |tee shermo.log")
+        with open(os.path.join(calculation_dir, 'shermo.log'), 'r') as f:
+            shermo_log = f.readlines()
+        G_corr, H_corr, U_corr, G, H, U = 0, 0, 0, 0, 0, 0
+        for line in shermo_log:
+            if line.startswith(' Thermal correction to U'):
+                U_corr = float(line.split()[8])
+            elif line.startswith(' Thermal correction to G'):
+                G_corr = float(line.split()[8])
+            elif line.startswith(' Thermal correction to H'):
+                H_corr = float(line.split()[8])
+            elif line.startswith(' Sum of electronic energy and thermal correction to U:'):
+                U = float(line.split()[9])
+            elif line.startswith(' Sum of electronic energy and thermal correction to G:'):
+                G = float(line.split()[9])
+            elif line.startswith(' Sum of electronic energy and thermal correction to H'):
+                H = float(line.split()[9])
+        if 0 in (U_corr, G_corr, H_corr, G, H, U):
+            raise ValueError('Missing Values for one of (G_corr, H_corr, U_corr, G, H, U)')
+        convertor = 627.510
+        return (G_corr * convertor, H_corr * convertor, U_corr * convertor,
+                G * convertor, H * convertor, U * convertor)
+    finally:
+        os.chdir(current_directory)
 
 
 def get_free_energy_with_shermo(shermo_main_folder, out_file, energy, sclZPE=1.0, sclheat=1.0, sclS=1.0,
@@ -544,41 +633,59 @@ def is_gaussian_terminate(logfile):
 
 
 def convert_fchk2xyz(fchk, outdir, multiwfn_main_path):
+    """Convert a Gaussian ``.fchk`` file into an xyz file with Multiwfn.
+
+    The calling process' working directory is restored on exit, including when
+    Multiwfn fails, so the function can be reused inside loops.
+    """
     current_folder = os.getcwd()
+    os.makedirs(outdir, exist_ok=True)
     if os.path.basename(fchk) not in os.listdir(outdir):
         shutil.copy(fchk, outdir)
-    os.chdir(outdir)
 
-    convert_xyz_message = ['100\n', '2\n', '1\n', '\n']
-    with open('fchk_to_xyz.txt', 'w') as f:
-        f.writelines(convert_xyz_message)
-    if 'settings.ini' not in os.listdir(outdir):
-        shutil.copy(os.path.join(multiwfn_main_path, 'settings.ini'), outdir)
+    try:
+        os.chdir(outdir)
 
-    out, errors = run_command(f"{os.path.join(multiwfn_main_path, 'Multiwfn')} {os.path.basename(fchk)} "
-                              f"< fchk_to_xyz.txt |tee "
-                              f"fchk_to_xyz.log")
-    os.remove('fchk_to_xyz.txt')
-    os.remove('settings.ini')
-    os.chdir(current_folder)
+        convert_xyz_message = ['100\n', '2\n', '1\n', '\n']
+        with open('fchk_to_xyz.txt', 'w') as f:
+            f.writelines(convert_xyz_message)
+        if 'settings.ini' not in os.listdir(outdir):
+            shutil.copy(os.path.join(multiwfn_main_path, 'settings.ini'), outdir)
+
+        out, errors = run_command(f"{os.path.join(multiwfn_main_path, 'Multiwfn')} {os.path.basename(fchk)} "
+                                  f"< fchk_to_xyz.txt |tee "
+                                  f"fchk_to_xyz.log")
+        for scratch in ('fchk_to_xyz.txt', 'settings.ini'):
+            if os.path.exists(scratch):
+                os.remove(scratch)
+    finally:
+        os.chdir(current_folder)
     return out, errors
 
 
 def get_metals_from_molfile(molfile_path):
     """
     读取 mol 文件，返回其中出现的金属元素符号列表（去重后）。
+
+    Requires the optional ``sugar`` toolkit; see :func:`_require_sugar`.
     """
+    HostMolecule = _require_sugar('get_metals_from_molfile')
     mol = HostMolecule.init_from_mol_file(molfile_path)
 
     # 用集合去重，再转成排序列表
     metals = {
         atom.get_element()
         for atom in mol.get_atoms()
-        if atom.get_element() in _metal_element
+        if atom.get_element() in METAL_ELEMENTS
     }
     return sorted(metals)
 
 def get_elements_from_molfile(molfile_path):
+    """Return the sorted, de-duplicated element symbols of a structure file.
+
+    Requires the optional ``sugar`` toolkit; see :func:`_require_sugar`.
+    """
+    HostMolecule = _require_sugar('get_elements_from_molfile')
     mol = HostMolecule.init_from_mol_file(molfile_path)
     elements = set()
     for atom in mol.get_atoms():
@@ -628,6 +735,8 @@ def preprocessing(
     if metal is None or not isinstance(metal, dict):
         raise ValueError(f"Metal input should be a dict.")
     temp_mol = AllChem.MolFromMolFile(file_path, sanitize=False, removeHs=False)
+    if temp_mol is None:
+        raise ValueError(f'Could not read molecule file: {file_path}')
     # temp_mol = AllChem.AddHs(temp_mol)
     pt = Chem.GetPeriodicTable()
 
@@ -636,7 +745,13 @@ def preprocessing(
     metals = [at for at in rw_mol.GetAtoms() if is_transition_metal(at)]
 
     for m in metals:
-        m.SetFormalCharge(metal[m.GetSymbol()])
+        symbol = m.GetSymbol()
+        if symbol not in metal:
+            raise KeyError(
+                f"No formal charge provided for metal '{symbol}' in {file_path}. "
+                f"Pass it explicitly, e.g. metal={{'{symbol}': <charge>}}."
+            )
+        m.SetFormalCharge(metal[symbol])
         for nbr in m.GetNeighbors():
             if nbr.GetAtomicNum() in from_atoms and \
                     nbr.GetExplicitValence() > pt.GetDefaultValence(nbr.GetAtomicNum()) and \
