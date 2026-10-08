@@ -1,0 +1,68 @@
+cff-version: 1.2.0
+message: "If you use DeepHostGuest in your research, please cite the manuscript below."
+type: software
+title: "DeepHostGuest: geometric deep learning for supramolecular host-guest binding-conformation prediction"
+abstract: >-
+  DeepHostGuest is a geometric deep learning framework that learns crystal-structure-informed
+  host-guest distance preferences from experimentally resolved supramolecular complexes and
+  predicts guest binding conformations inside host cavities, optionally followed by GFN2-xTB
+  geometry refinement. The repository contains the full pipeline: dataset construction,
+  data augmentation, model training, pose prediction, crystalline-sponge prediction,
+  and downstream binding-strength analysis (DFT-correlation workflow and AutoGluon/SHAP
+  structure-property modelling).
+authors:
+  - family-names: Wang
+    given-names: Zidi
+  - family-names: Zhang
+    given-names: Tao
+  - family-names: Yu
+    given-names: Muyao
+  - family-names: Zhou
+    given-names: Chuyi
+  - family-names: Xu
+    given-names: Zezhao
+  - family-names: Liu
+    given-names: Huiyu
+  - family-names: Wen
+    given-names: Yuzhen
+  - family-names: Chen
+    given-names: Linjiang
+  - family-names: Zheng
+    given-names: Jie
+  - family-names: Jiang
+    given-names: Shan
+version: 1.0.1
+date-released: "2026-10-08"
+license: MIT
+repository-code: "https://github.com/Chemwzd/DeepHostGuest"
+keywords:
+  - host-guest chemistry
+  - supramolecular chemistry
+  - geometric deep learning
+  - docking
+  - molecular conformation prediction
+preferred-citation:
+  type: article
+  title: "Learning to Dock: Geometric Deep Learning for Predicting Supramolecular Host-Guest Complexes"
+  authors:
+    - family-names: Wang
+      given-names: Zidi
+    - family-names: Zhang
+      given-names: Tao
+    - family-names: Yu
+      given-names: Muyao
+    - family-names: Zhou
+      given-names: Chuyi
+    - family-names: Xu
+      given-names: Zezhao
+    - family-names: Liu
+      given-names: Huiyu
+    - family-names: Wen
+      given-names: Yuzhen
+    - family-names: Chen
+      given-names: Linjiang
+    - family-names: Zheng
+      given-names: Jie
+    - family-names: Jiang
+      given-names: Shan
+  journal: "Manuscript under review"
