@@ -366,6 +366,10 @@ whose tools this pipeline builds upon.
 
 See [`CHANGELOG.md`](CHANGELOG.md).
 
+- **v1.0.3** (2026-10-12): fixed the `removeHs=True` branch of
+  `mol2graph.mol_to_nx` (`GetAtomicNum` was compared without calling it, so the
+  heavy-atom branch returned an empty graph); documented both featurisation modes
+  (14 node features with H, 13 without).
 - **v1.0.2** (2026-10-08): code-review hardening. Removed the internal `sugar`
   dependency from the shipped pipeline (`utils/geometry.py`, RDKit
   `heavy_atom_centroid`, guarded imports); fixed the dataset builder

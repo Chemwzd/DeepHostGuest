@@ -15,6 +15,22 @@ def oneHotVector(val, lst):
 
 
 def mol_to_nx(mol, removeHs=False):
+    """Featurise an RDKit molecule into a NetworkX graph.
+
+    Two featurisation modes are supported:
+
+    ``removeHs=False`` (default, used by every released prediction pipeline)
+        all atoms are kept, including hydrogens, and node features are
+        13 element one-hot entries (H, B, C, N, O, F, Si, P, S, Cl, As, Br, I)
+        plus the formal charge  ->  14 features.
+    ``removeHs=True``
+        hydrogens are skipped and node features are the 12 heavy-element
+        entries plus the formal charge  ->  13 features (this reproduces the
+        DeepDock behaviour, which never models hydrogens).
+
+    Edge features are ``[bond-order one-hot(5), isConjugated, isAromatic]``
+    -> 7 features in either mode.
+    """
     G = nx.Graph()
 
     # Globals.
@@ -22,7 +38,9 @@ def mol_to_nx(mol, removeHs=False):
     atomCoords = mol.GetConformer().GetPositions()
     if removeHs:
         for i, atom in enumerate(mol.GetAtoms()):
-            if atom.GetAtomicNum == 1:
+            # NOTE: GetAtomicNum is a method - without the call the test was
+            # always truthy and the heavy-atom branch produced an EMPTY graph.
+            if atom.GetAtomicNum() == 1:
                 continue
             G.add_node(atom.GetIdx(),
                        pos=atomCoords[i],

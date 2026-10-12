@@ -4,6 +4,34 @@ All notable changes to this project are documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 versioning follows [Semantic Versioning](https://semver.org/).
 
+## [1.0.3] - 2026-10-12
+
+Comparison against the upstream DeepDock repository (`OptiMaL-PSE-Lab/DeepDock`,
+commit `ab1e450`) surfaced one more correctness defect in the `removeHs` branch of
+the molecular featuriser. No change to the released numerical results.
+
+### Fixed
+- `DeepHostGuest/utils/mol2graph.py` (`mol_to_nx`): the heavy-atom branch tested
+  `if atom.GetAtomicNum == 1:` — the method object is always truthy, so with
+  `removeHs=True` **every** atom was skipped and the function returned an empty
+  graph. Any caller that relied on the default `removeHs=True`
+  (`dock_compound()`, `HostGuest_dataset()`) would have built an empty guest graph
+  and failed downstream. Fixed to `atom.GetAtomicNum() == 1`.
+- `mol_to_nx` now documents both featurisation modes explicitly: `removeHs=False`
+  keeps hydrogens and produces 14 node features (13 element one-hot + formal
+  charge), `removeHs=True` produces 13 node features (12 heavy elements + formal
+  charge); edge features are 7-dimensional in both modes. These dimensions match
+  `LigandNet(14, edge_features=7)` and `LigandNet(13, edge_features=7)` used by the
+  released prediction scripts.
+
+### Verification
+- Both modes exercised on the bundled `vuqzal` guest: `removeHs=False` → 16 nodes /
+  15 edges / 14 node features; `removeHs=True` → 8 nodes (heavy atoms only) /
+  7 edges / 13 node features. Before the fix the second call returned 0 nodes.
+- Released pipelines are unaffected: every script in `examples/` passes
+  `removeHs=False` explicitly, so the manuscript results were produced with the
+  hydrogen-inclusive (14-feature) branch.
+
 ## [1.0.2] - 2026-10-08
 
 Code-review hardening pass (Alibaba Open Code Review, five-dimension rule group:
